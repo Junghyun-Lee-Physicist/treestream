@@ -73,16 +73,18 @@ python3 bin/mkvariables.py <Input_ROOT_File> [Tree_Name(s)]
 python3 bin/mkvariables.py my_ntuple.root Events
 ```
 
-#### 📄 `variables.txt`의 역할
-
-이 파일은 **Analyzer 생성의 설계도(Blueprint)** 역할을 합니다.
-
-- **ROOT 파일의 실제 구조 반영:** `mkvariables.py` 실행 시점에 존재하는 Branch들만 기록됩니다.
-    
-- **데이터 타입 정의:** 각 Branch가 `float`, `int`, `vector<float>` 등으로 매핑되는 정보를 담고 있습니다.
     
 - **Leaf Counter 연결:** 배열(Vector)형 변수의 크기를 결정하는 Counter 변수(`nJet` 등)를 연결합니다.
     
+#### 📄 `variables.txt`의 역할
+
+이 파일은 **Analyzer 생성의 설계도(Blueprint)** 역할을 합니다. `mkanalyzer.py`는 이 파일을 참조하여 C++ 코드를 작성합니다.
+
+- **ROOT 파일의 실제 구조 반영:** `mkvariables.py` 실행 시점에 **실제로 존재하는 Branch**들만 기록됩니다.
+    
+- **데이터 타입 매핑:** `float`, `int`, `vector<float>` 등 각 Branch의 C++ 데이터 타입을 정의합니다.
+    
+- **Leaf Counter 연결:** 배열(Vector)형 변수의 크기를 제어하는 Counter 변수(`nJet` 등)를 연결합니다.
 
 ---
 
@@ -105,14 +107,13 @@ python3 bin/mkanalyzer.py MyAnalyzer variables.txt
 ---
 
 ## 🚨 중요 변경 사항: 데이터 무결성 강화 (Fail-Fast Mechanism)
+이전 버전의 treestream은 존재하지 않는 Branch를 요청했을 때 **경고(Warning)**만 출력하고, 해당 변수를 **0으로 초기화(Zero-Initialization)**하여 분석을 강행했습니다. 이는 **"Ghost Object" (실제로는 없는데 값이 0인 입자)**를 만들어내어 분석 결과에 치명적인 오류를 줄 수 있습니다.
 
-이전 버전에서는 존재하지 않는 Branch를 읽으려 할 때 **경고(Warning)**만 발생하고, 해당 변수가 **0으로 초기화된 상태(Ghost Objects)**로 분석이 진행되는 위험이 있었습니다.
-
-이를 방지하기 위해, **데이터가 없으면 즉시 프로그램을 종료하고, 불필요한 초기화를 하지 않도록** 코드를 수정하였습니다.
+이를 방지하기 위해 **"데이터가 없으면 즉시 종료(Crash)"**하도록 소스 코드를 수정했습니다.
 
 ### 1. `src/treestream.cc` 수정
 
-Branch가 존재하지 않을 경우, 경고 대신 **Fatal Error**를 발생시켜 프로그램을 강제 종료합니다.
+ROOT 파일에서 Branch를 찾지 못했을 때, 경고 대신 Fatal Error를 발생시킵니다. 그리고 프로그램이 강제 종료됩니다.
 
 **변경 전 (Warning only):**
 
@@ -176,9 +177,119 @@ Python
                     # ...
 ```
 
-### ✅ 이 변경으로 인한 효과
+### 3. 파싱 로직 수정 (Branch 이름에 `/`가 들어갈 때 에러 해결)
 
-1. **Ghost Object 방지:** 실제 데이터가 없는데도 `pT=0`인 입자가 존재하는 것처럼 루프가 도는 현상이 사라집니다.
+- **위치:** `bin/mkanalyzer.py` 약 860번째 줄 근처 (`for index, tns in enumerate(tokens):` 바로 아래)
     
-2. **명확한 에러:** `variables.txt`에는 정의되어 있으나 실제 ROOT 파일에 해당 Branch가 없으면, 분석 시작 즉시 에러 메시지와 함께 종료되므로 문제를 바로 파악할 수 있습니다.
 
+#### ❌ [변경 전] (기존 코드)
+
+Python
+
+```
+        # check for leafcounter
+        has_leafcounter = len(tns) == 5
+        if has_leafcounter:
+            rtype, branchname, varname, count, countername = tns
+        elif len(tns) == 4:
+            rtype, branchname, varname, count = tns
+            countername = None
+        else:
+            sys.exit('''
+ ** mkanalyzer.py ***
+            missing maximum count at end of record:
+            %s
+            ''' % tns)
+```
+
+#### ✅ [변경 후] (수정된 코드 - 복사해서 위 부분을 덮어쓰세요)
+
+Python
+
+```
+        # --------------------------------------------------------------------
+        # [Fix] Handle Branch names containing '/' (e.g., Events/BranchName)
+        # --------------------------------------------------------------------
+        try:
+            # 1. Type is always the first token
+            rtype = tns[0]
+
+            # 2. Count info is always the last token
+            last_token = tns[-1]
+            if ' ' in last_token:
+                count_str, countername = last_token.split()
+            else:
+                count_str = last_token
+                countername = None
+            
+            count = count_str 
+
+            # 3. Variable name is always the second to last token
+            varname = tns[-2]
+
+            # 4. Branch name is everything in between (Handle 'Events/Name')
+            branchname = "/".join(tns[1:-2])
+
+        except Exception as e:
+             sys.exit('''
+ ** mkanalyzer.py ***
+            Parsing error for record: %s
+            Error: %s
+            ''' % (tns, e))
+```
+
+---
+
+
+### ✅ 결과: 생성되는 코드 (`eventBuffer.h - 구조체`)의 변화
+
+위 변경 사항 덕분에, `mkanalyzer.py`로 생성된 `eventBuffer.h`의 `initBuffers()` 함수는 더 이상 위험한 초기화를 수행하지 않습니다.
+
+**[Before: 위험한 코드]** Branch가 없어도 벡터가 25개짜리 `[0, 0, ..., 0]` 배열이 됨 → **루프가 25번 돌면서 가짜 입자 분석.**
+
+C++
+
+```
+// eventBuffer.h (기존 방식)
+void initBuffers() {
+  FatJet_pt = std::vector<float>(25, 0); // ⚠️ 위험: 강제로 0으로 채워짐
+  Jet_pt    = std::vector<float>(50, 0);
+}
+```
+
+**[After: 안전한 코드]** 초기화 코드가 제거됨. 데이터가 없으면 벡터 크기는 `0`. 만약 코드에서 접근하려 하면 **Index Out of Range** 혹은 `treestream`의 **Fatal Error**로 인해 즉시 멈춤.
+
+C++
+
+```
+// eventBuffer.h (현재 방식)
+void initBuffers() {
+  // 🔒 안전: 아무런 강제 초기화를 하지 않음.
+  // 데이터가 로드되지 않으면 vector.size() == 0 상태 유지.
+}
+```
+
+### ✅ 결과: 생성되는 코드(`treestream.cc - 엔진`)의 변화
+변화: Branch가 없으면 fatal() 함수를 호출하여 분석을 즉시 중단합니다.
+
+효과: 잘못된 데이터나 Ntuple 버전 불일치를 즉시 감지합니다.
+
+
+## ⚡ 기존 Analyzer 업데이트 및 샘플 변경 시 대응 방법
+
+이미 만들어둔 Analyzer가 있거나, **새로운 Ntuple 샘플(Branch가 추가/변경됨)**을 분석해야 할 경우, 전체 프로젝트를 다시 만들 필요 없이 **핵심 파일만 덮어쓰면 됩니다.**
+
+1. **새로운 변수 목록 생성:**
+
+2. **새로운 버퍼 코드 생성 (임시 폴더 등 활용):**
+
+3. **파일 이식 (Copy & Replace):** 생성된 `TempProject` 폴더에서 아래 3개 파일만 기존 분석 작업 폴더로 복사해 넣으십시오.
+
+    - `src/treestream.cc` (수정된 안전장치 엔진)
+
+    - `include/treestream.h` (헤더)
+
+    - `include/eventBuffer.h` (새로운 Branch 구조 및 초기화 방지 적용됨)
+
+
+> **Note:** 이렇게 하면 기존에 작성한 분석 로직(`MyAnalyzer.cc` 등)은 유지하면서, 변경된 Ntuple 구조와 안전장치를 즉시 적용할 수 있습니다.

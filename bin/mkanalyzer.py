@@ -843,19 +843,49 @@ def main():
     skipped = '' # variables that are skipped
     for index, tns in enumerate(tokens):
 
-        # check for leafcounter
-        has_leafcounter = len(tns) == 5
-        if has_leafcounter:
-            rtype, branchname, varname, count, countername = tns
-        elif len(tns) == 4:
-            rtype, branchname, varname, count = tns
-            countername = None
-        else:
-            sys.exit('''
+####        # check for leafcounter
+####        has_leafcounter = len(tns) == 5
+####        if has_leafcounter:
+####            rtype, branchname, varname, count, countername = tns
+####        elif len(tns) == 4:
+####            rtype, branchname, varname, count = tns
+####            countername = None
+####        else:
+####            sys.exit('''
+#### ** mkanalyzer.py ***
+####            missing maximum count at end of record:
+####            %s
+####            ''' % tns)
+        # --------------------------------------------------------------------
+        # [Fixed by Jh.Lee] Handle Branch names containing '/' (e.g., Events/BranchName)
+        # --------------------------------------------------------------------
+        try:
+            # 1. Type is always the first token
+            rtype = tns[0]
+
+            # 2. Count info is always the last token
+            last_token = tns[-1]
+            if ' ' in last_token:
+                count_str, countername = last_token.split()
+            else:
+                count_str = last_token
+                countername = None
+            
+            count = count_str 
+
+            # 3. Variable name is always the second to last token
+            varname = tns[-2]
+
+            # 4. Branch name is everything in between (Handle 'Events/Name')
+            branchname = "/".join(tns[1:-2])
+
+        except Exception as e:
+             sys.exit('''
  ** mkanalyzer.py ***
-            missing maximum count at end of record:
-            %s
-            ''' % tns)
+            Parsing error for record: %s
+            Error: %s
+            ''' % (tns, e))
+
 
         # for now strings aren't supported
         if rtype.find("string") > -1: 
@@ -1049,9 +1079,9 @@ def main():
 		    
             else:
                 # VARIABLE LENGTH ARRAY
-####                declarevec.append("  std::vector<%s>\t%s;" % (rtype, varname))
+                declarevec.append("  std::vector<%s>\t%s;" % (rtype, varname))
 ####                init.append("    %s\t= std::vector<%s>(%d,0);" % \
-                            (varname, rtype, count))
+####                            (varname, rtype, count))
                     # Above 2 line are commented out by Jh.Lee to prevent vector initialization
 
                 if countername == None:
