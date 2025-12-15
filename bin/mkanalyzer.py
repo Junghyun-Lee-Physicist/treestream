@@ -1043,13 +1043,17 @@ def main():
                 vtype = vtype[0]
                 
                 declarevec.append("  %s\t%s;" % (rtype, varname))
-                init.append("    %s\t= %s(%d, (%s)0);" % \
-                        (varname, rtype, count, vtype))
+####                init.append("    %s\t= %s(%d, (%s)0);" % \
+####                        (varname, rtype, count, vtype))
+                    # Above 2 line are commented out by Jh.Lee to prevent vector initialization
+		    
             else:
                 # VARIABLE LENGTH ARRAY
-                declarevec.append("  std::vector<%s>\t%s;" % (rtype, varname))
-                init.append("    %s\t= std::vector<%s>(%d,0);" % \
+####                declarevec.append("  std::vector<%s>\t%s;" % (rtype, varname))
+####                init.append("    %s\t= std::vector<%s>(%d,0);" % \
                             (varname, rtype, count))
+                    # Above 2 line are commented out by Jh.Lee to prevent vector initialization
+
                 if countername == None:
                     sys.exit("** error ** array %s does not have a "\
                                  "leafcounter name" % varname)

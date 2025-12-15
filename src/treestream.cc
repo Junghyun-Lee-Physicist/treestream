@@ -1906,8 +1906,11 @@ itreestream::_select(string namen, void* address, int maxsize, char srctype,
     }
   else
     {
-      warning("itreestream - branch " + namen + " not found");
-      _statuscode = kBADBRANCH;
+////      warning("itreestream - branch " + namen + " not found");
+////      _statuscode = kBADBRANCH;
+      // Jh.Lee modified above 2 line, 
+      // If treestream could not find specific branch, then it will occur "fetal error"
+      fatal("itreestream - CRITICAL ERROR: Branch '" + namen + "' not found! Aborting.");
     }
 }  
 
