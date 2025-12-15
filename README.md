@@ -37,3 +37,20 @@ containing a description of (by default) the first tree it finds.
 
 2. __mkanalyzer.py__ reads __variables.txt__ and creates the skeleton of an C++ 
 and Python analyzer program for the Root tree.
+
+
+## Overall Workflow
+
+step1) source setup.sh
+step2) mkvariables.py --> output : variables.txt
+
+```bash
+# mkvariables.py [ input ntuple ] [ tree name ]
+$ mkvariables.py data.root Events
+```
+
+step3) mkanalyzer.py --> output : analyzer directories including eventBuffer.h, analyzer.cc, etc..
+step4) compile --> output : library and execution files
+step5) run analyzer
+
+
