@@ -293,3 +293,19 @@ void initBuffers() {
 
 
 > **Note:** 이렇게 하면 기존에 작성한 분석 로직(`MyAnalyzer.cc` 등)은 유지하면서, 변경된 Ntuple 구조와 안전장치를 즉시 적용할 수 있습니다.
+
+
+# Future update 목록
+1. test directory에 존재하는 object를 make clean 할 때 같이 없어지게 해야 할 것으로 보임
+2. mkanalyzer안에 보면 CMSSW_BASE가 있으면 NtupleMaker라는 모듈에서부터 위 라이브리러 동작을 시도함. 이러면 찾지를 못함. 실제론 scram 안했으니까. 따라서 주석 처리 필요 아래처럼.
+```python
+####if "CMSSW_BASE" in os.environ:
+####    CMSSW_BASE     = os.environ["CMSSW_BASE"]
+####    PACKAGE        = "%s/src/PhysicsTools/TheNtupleMaker" % CMSSW_BASE
+####    TREESTREAM_HPP = "%s/interface/treestream.h" % PACKAGE
+####    TREESTREAM_CPP = "%s/src/treestream.cc"  % PACKAGE
+####
+####    TNM_HPP = "%s/tnm/tnm.h"  % PACKAGE
+####    TNM_CPP = "%s/tnm/tnm.cc" % PACKAGE
+####    TNM_PY  = "%s/tnm/tnm.py" % PACKAGE
+```
