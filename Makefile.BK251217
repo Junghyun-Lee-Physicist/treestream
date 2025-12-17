@@ -1,15 +1,9 @@
 # Build libtreestream.so
 # Created 27 Feb 2013 HBP & SS
-#         30 May 2015 HBP - standardize structure (src, lib, include)
+#         30 May 2015 HBP - standardize structure (src, lib, include) 
 #         12 Sep 2022 HBP - use TREESTREAM_PREFIX as installation area and
 #                           allow installation only if the variable is defined
 # ----------------------------------------------------------------------------
-
-# [USER OPTION] Select Compiler: 'gcc' or 'clang'
-# You can override this via command line: make COMPILER_SELECT=clang
-##COMPILER_SELECT := clang
-COMPILER_SELECT := gcc
-
 ifndef ROOTSYS
 $(error *** Please set up Root)
 endif
@@ -68,14 +62,14 @@ PYTHONLIB	:= python$(PY1).$(PY2)
 ROOTCINT	:= rootcint
 
 # check for clang++, otherwise use g++
-ifeq ($(COMPILER_SELECT),clang)
-CXX		:= clang++
-LD		:= clang++
+COMPILER	:= $(shell which clang++)
+ifneq ($(COMPILER),)
+CXX		:= /usr/bin/clang++
+LD		:= /usr/bin/clang++
 else
 CXX		:= g++
 LD		:= g++
 endif
-
 CPPFLAGS	:= -I. -I$(incdir)
 CXXFLAGS	:= -O -Wall -fPIC -g -ansi -Wshadow -Wextra \
 $(shell root-config --cflags)
@@ -142,7 +136,6 @@ tidy:
 	rm -rf $(srcdir)/*_dict*.* $(srcdir)/*.o $(testdir)/*.o
 
 clean:
-	# Clean lib, src objects, and now test objects as well
 	rm -rf $(libdir)/* $(srcdir)/*_dict*.* $(srcdir)/*.o $(testdir)/*.o
 
 ifdef TREESTREAM_PREFIX

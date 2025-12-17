@@ -115,8 +115,8 @@ namespace {
 nullptr
     };
     static const char* includePaths[] = {
-"/opt/homebrew/Cellar/root/6.34.08_1/include/root",
-"/Users/jhlee/treestream/",
+"/cvmfs/cms.cern.ch/el9_amd64_gcc12/lcg/root/6.30.09-a471e16c07e14e11bdeeaf6baa56e34c/include/",
+"/u/user/jhlee/ttHH/CMSSW_14_2_1/src/treestream/",
 nullptr
     };
     static const char* fwdDeclCode = R"DICTFWDDCLS(
