@@ -296,8 +296,7 @@ void initBuffers() {
 
 
 # Future update 목록
-1. test directory에 존재하는 object를 make clean 할 때 같이 없어지게 해야 할 것으로 보임
-2. mkanalyzer안에 보면 CMSSW_BASE가 있으면 NtupleMaker라는 모듈에서부터 위 라이브리러 동작을 시도함. 이러면 찾지를 못함. 실제론 scram 안했으니까. 따라서 주석 처리 필요 아래처럼.
+1. mkanalyzer안에 보면 CMSSW_BASE가 있으면 NtupleMaker라는 모듈에서부터 위 라이브리러 동작을 시도함. 이러면 찾지를 못함. 실제론 scram 안했으니까. 따라서 주석 처리 필요 아래처럼.
 ```python
 ####if "CMSSW_BASE" in os.environ:
 ####    CMSSW_BASE     = os.environ["CMSSW_BASE"]
@@ -309,3 +308,206 @@ void initBuffers() {
 ####    TNM_CPP = "%s/tnm/tnm.cc" % PACKAGE
 ####    TNM_PY  = "%s/tnm/tnm.py" % PACKAGE
 ```
+
+2. 
+
+기존 Makefile은 
+```Makefile
+# check for clang++, otherwise use g++
+
+COMPILER := $(shell which clang++)
+
+ifneq ($(COMPILER),)
+CXX := /usr/bin/clang++
+LD := /usr/bin/clang++
+
+else
+CXX := g++
+LD := g++
+
+endif
+CPPFLAGS := -I. -I$(incdir)
+CXXFLAGS := -O -Wall -fPIC -g -ansi -Wshadow -Wextra \
+
+$(shell root-config --cflags)
+
+LDFLAGS := -g
+```
+
+이와 같은 논리를 가짐. 문제는 CMSSW 환경에선 clang이 있어서 COMPILER가 true 값이 될 수 있지만 위치가 cvmfs이지 `/usr/bin/clang++`이 아님. 즉 위 로직이 에러를 일으킨다는 것.
+
+따라서 사용자가 직접 컴파일러를 선택할 수 있도록 코드를 아래처럼 바꾸었음
+```Makefile
+# Build libtreestream.so
+# Created 27 Feb 2013 HBP & SS
+#         30 May 2015 HBP - standardize structure (src, lib, include)
+#         12 Sep 2022 HBP - use TREESTREAM_PREFIX as installation area and
+#                           allow installation only if the variable is defined
+# ----------------------------------------------------------------------------
+
+# [USER OPTION] Select Compiler: 'gcc' or 'clang'
+# You can override this via command line: make COMPILER_SELECT=clang
+##COMPILER_SELECT := clang
+COMPILER_SELECT := gcc
+
+ifndef ROOTSYS
+$(error *** Please set up Root)
+endif
+
+ifndef TREESTREAM_PREFIX
+ifdef CONDA_PREFIX
+TREESTREAM_PREFIX := $(CONDA_PREFIX)
+endif
+endif
+
+# ----------------------------------------------------------------------------
+NAME	:= treestream
+incdir	:= include
+srcdir	:= src
+libdir	:= lib
+bindir	:= bin
+testdir	:= test
+
+SRCTESTS:= \
+$(testdir)/testtreestream.cc \
+$(testdir)/testdelphes.cc \
+$(testdir)/testvector.cc
+
+OBJTESTS:= $(SRCTESTS:.cc=.o)
+TESTS	:= $(SRCTESTS:.cc=)
+
+$(shell mkdir -p lib)
+
+# get lists of sources
+
+SRCS	:=  	$(srcdir)/treestream.cc \
+		$(srcdir)/pdg.cc \
+		$(srcdir)/testme.cc
+
+CINTSRCS	:= $(wildcard $(srcdir)/*_dict.cc)
+
+OTHERSRCS	:= $(filter-out $(CINTSRCS) $(SRCS),$(wildcard $(srcdir)/*.cc))
+
+# list of dictionaries to be created
+DICTIONARIES	:= $(SRCS:.cc=_dict.cc)
+
+# get list of objects
+OBJECTS		:= $(SRCS:.cc=.o) $(OTHERSRCS:.cc=.o) $(DICTIONARIES:.cc=.o)
+
+PYVER	:= $(shell python --version | cut -d' ' -f2)
+PY1	:= $(shell echo "$(PYVER)"  | cut -d. -f1)
+PY2	:= $(shell echo "$(PYVER)"  | cut -d. -f2)
+PYTHONLIB	:= python$(PY1).$(PY2)
+
+#say := $(shell echo "DICTIONARIES:     $(DICTIONARIES)" >& 2)
+#say := $(shell echo "" >& 2)
+#say := $(shell echo "SRCS: $(SRCS)" >& 2)
+#say := $(shell echo "PYTHON_LIB: $(PYTHONLIB)" >& 2)
+#$(error bye)
+# ----------------------------------------------------------------------------
+ROOTCINT	:= rootcint
+
+# check for clang++, otherwise use g++
+ifeq ($(COMPILER_SELECT),clang)
+CXX		:= clang++
+LD		:= clang++
+else
+CXX		:= g++
+LD		:= g++
+endif
+
+CPPFLAGS	:= -I. -I$(incdir)
+CXXFLAGS	:= -O -Wall -fPIC -g -ansi -Wshadow -Wextra \
+$(shell root-config --cflags)
+LDFLAGS		:= -g
+# ----------------------------------------------------------------------------
+# which operating system?
+OS := $(shell uname -s)
+ifeq ($(OS),Darwin)
+	LDFLAGS += -dynamiclib
+	LDEXT	:= .dylib
+else
+	LDFLAGS	+= -shared
+	LDEXT	:= .so
+endif
+
+
+LDFLAGS += $(ROOTFLAGS) -Wl,-rpath,$(ROOTSYS)/lib
+LIBS 	:= $(shell root-config --libs)
+LIBRARY	:= $(libdir)/lib$(NAME)$(LDEXT)
+# ----------------------------------------------------------------------------
+all: $(LIBRARY) $(TESTS)
+
+ifdef TREESTREAM_PREFIX
+install:
+	cp $(bindir)/mk*.py $(TREESTREAM_PREFIX)/bin
+	cp $(incdir)/treestream.h $(TREESTREAM_PREFIX)/include
+	cp $(incdir)/pdg.h $(TREESTREAM_PREFIX)/include
+	cp $(libdir)/lib$(NAME)$(LDEXT) $(TREESTREAM_PREFIX)/lib
+	find $(libdir) -name "*.pcm" -exec cp {} $(TREESTREAM_PREFIX)/lib \;
+	cp treestream.py $(TREESTREAM_PREFIX)/lib/$(PYTHONLIB)/site-packages
+endif
+
+
+$(LIBRARY)	: $(OBJECTS)
+	@echo ""
+	@echo "=> Linking shared library $@"
+	$(LD) $(LDFLAGS) $^ $(LIBS)  -o $@
+
+$(OBJECTS)	: %.o	: 	%.cc
+	@echo ""
+	@echo "=> Compiling $<"
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(DICTIONARIES)	: $(srcdir)/%_dict.cc	: $(incdir)/%.h $(srcdir)/%_linkdef.h
+	@echo ""
+	@echo "=> Building dictionary $@"
+	$(ROOTCINT)	-f $@ -c $(CPPFLAGS) $^
+	find $(srcdir) -name "*.pcm" -exec mv {} $(libdir) \;
+
+
+$(OBJTESTS)	: %.o	:	%.cc
+	@echo ""
+	@echo "=> Compiling $<"
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
+
+
+$(TESTS)	: %	:	%.o	$(LIBRARY)
+	@echo ""
+	@echo "=> Linking test program $@"
+	$(LD) $(ROOTFLAGS) $^ -L$(libdir) -l$(NAME) $(LIBS) -o $@
+
+
+tidy:
+	rm -rf $(srcdir)/*_dict*.* $(srcdir)/*.o $(testdir)/*.o
+
+clean:
+	# Clean lib, src objects, and now test objects as well
+	rm -rf $(libdir)/* $(srcdir)/*_dict*.* $(srcdir)/*.o $(testdir)/*.o
+
+ifdef TREESTREAM_PREFIX
+uninstall:
+	rm -rf $(libdir)/* $(srcdir)/*_dict*.* $(srcdir)/*.o
+	rm -rf $(TESTS) $(OBJTESTS)
+	rm -rf $(TREESTREAM_PREFIX)/lib/*$(NAME)*
+	rm -rf $(TREESTREAM_PREFIX)/lib/pdg_*.pcm
+	rm -rf $(TREESTREAM_PREFIX)/include/*$(NAME)*
+	rm -rf $(TREESTREAM_PREFIX)/include/pdg.h
+	rm -rf $(TREESTREAM_PREFIX)/lib/$(PYTHONLIB)/site-packages/$(NAME).py
+endif
+```
+
+동작은 아래처럼 하면 됨
+
+### 사용법 요약
+
+1. **기본 (g++) 사용 시:**
+```bash
+make
+```
+2. **clang 사용 시:**
+```bash
+make COMPILER_SELECT=clang
+```
+
+
