@@ -511,3 +511,214 @@ make COMPILER_SELECT=clang
 ```
 
 
+-----------
+
+### 📝 Update Log: Data Integrity & Super-Set Strategy Support
+
+**Date:** 2025-12-18 **File:** `bin/mkanalyzer.py` **Description:** Data/MC 통합 변수 목록(Super-Set) 사용 시, 존재하지 않는 Branch에 대한 안전성 확보를 위해 초기화 로직 변경.
+(쉽게 얘기하면 branch가 data b period나 data-mc 사이에 다른데 무조건 특정 branch 없을 때 에러나게 하면 문제가 됨)
+
+#### 🔧 주요 변경 사항 (Changes)
+
+**1. 스칼라 변수 (Scalar Variables, `count == 1`)**
+
+- **변경:** `0`으로 초기화하는 코드를 **추가 (`init.append`)**.
+    
+- **이유 (Why):** Branch가 파일에 없어 `select()`가 실행되지 않을 경우, 변수에 메모리상의 **쓰레기 값(Garbage Value)**이 남는 것을 방지하기 위함. 이제 `0`으로 안전하게 초기화됨.
+    
+
+**2. 벡터 변수 (Vector Variables, `count > 1`)**
+
+- **변경:** 강제 `resize` 및 초기화 코드를 **제거 (주석 처리)**.
+    
+- **이유 (Why):** Branch가 파일에 없을 때 강제로 크기를 할당하면, 값이 0인 **"유령 객체(Ghost Object)"**가 생성되어 분석 루프가 잘못 도는 문제를 방지하기 위함. 초기화하지 않으면 `std::vector`는 `size=0` 상태를 유지하므로 안전함.
+    
+
+#### 📄 코드 변경 내역 (Code Diff)
+
+`bin/mkanalyzer.py` (Line ~940)
+
+Python
+
+```
+# [SCALAR] count == 1
+if count == 1:
+    declare.append("  %s\t%s;" % (rtype, varname))
+    
+    # [ADDED] Initialize scalar to 0 to prevent garbage values when branch is missing
+    init.append("    %s\t= 0;" % varname) 
+
+# [VECTOR] count > 1 (else block)
+else:
+    # ... (Vector type detection) ...
+    declarevec.append("  std::vector<%s>\t%s;" % (rtype, varname))
+    
+    # [REMOVED] Commented out to prevent Ghost Objects (Zero-filled vectors)
+    # init.append("    %s\t= std::vector<%s>(%d,0);" % (varname, rtype, count))
+```
+
+
+### new Update log:
+To solve `external buffer ... is of zero length` (vector size error) we update like below:
+
+### 🛠️ 수정 방법: `bin/mkanalyzer.py`
+
+**`setb` (Select 구문 생성)** 파트를 찾아서 수정해야 합니다. (약 920번째 줄 근처)
+
+#### 논리 설명
+
+1. **Scalar 변수 (`count == 1`):** 기존대로 `present` 확인 후 연결합니다.
+    
+2. **Vector 변수 (`count > 1`):**
+    
+    - `resize(최대개수)`: `treestream`에게 "이만큼 공간 있어!"라고 보여줍니다.
+        
+    - `select(...)`: 연결합니다. (에러 안 남)
+        
+    - `clear()`: **즉시 다시 비웁니다.** (Ghost Object 방지)
+        
+
+#### 📝 코드 수정 가이드
+
+`bin/mkanalyzer.py` 파일에서 `setb.append` 하는 부분을 찾아 아래 코드로 **통째로 교체**하세요.
+
+**[교체할 위치]**
+
+Python
+
+```
+        if single_tree:
+            choosename = str.split(branchname, '/')[-1]
+        else:
+            choosename = branchname
+        choose.append('  choose["%s"]\t= DEFAULT;' % choosename)
+        setb.append('  if ( choose["%s"] )'   % choosename)
+
+        # ▼▼▼▼▼ 여기 아래 부분을 교체하세요 ▼▼▼▼▼
+        # cmd = '    input->select("%s", \t%s);' % (branchname, varname)
+        # if len(cmd) < 75:
+        #    setb.append(cmd)
+        # else:
+        #    setb.append('    input->select("%s",' % branchname)
+        #    setb.append('                   %s);' % varname)
+```
+
+**[새로운 코드 (복사해서 붙여넣기)]**
+
+Python
+
+```
+        # ----------------------------------------------------------------------
+        # [Fix] Super-Set Strategy & Treestream Safety
+        # 1. Check input->present() to allow missing branches (Super-Set)
+        # 2. For vectors, temporarily resize() before select() to satisfy 
+        #    treestream's size check, then clear() to prevent Ghost Objects.
+        # ----------------------------------------------------------------------
+        if count == 1:
+            # Scalar: Just check existence
+            cmd = '    if (input->present("%s")) input->select("%s", %s);' % \
+                  (branchname, branchname, varname)
+            setb.append(cmd)
+        else:
+            # Vector: Resize -> Select -> Clear pattern
+            cmd = '    if (input->present("%s")) { ' \
+                  '%s.resize(%d); ' \
+                  'input->select("%s", %s); ' \
+                  '%s.clear(); }' % \
+                  (branchname, varname, count, branchname, varname, varname)
+            setb.append(cmd)
+```
+
+---
+
+### ✅ 동작 원리 (왜 이 방법이 통하는가?)
+
+1. **생성자 실행:** `Electron_charge`는 처음에 비어있음 (`size=0`).
+    
+2. **`present` 확인:** MC 파일이라 Branch가 있으므로 `if`문 진입.
+    
+3. **`resize(9)`:** 벡터 크기를 9로 늘림.
+    
+4. **`select` 호출:** `treestream`이 "오, 크기가 9네? OK." 하고 연결함. (**에러 해결**)
+    
+5. **`clear()`:** 벡터를 다시 0으로 비움.
+    
+6. **분석 시작:**
+    
+    - 데이터가 들어오면 `treestream`이 알아서 채워줌.
+        
+    - 데이터가 안 들어오면(Branch 없는 파일) `size=0` 유지 -> **Ghost Object 없음.**
+        
+
+이 코드를 적용하시고 다시 `mkanalyzer.py`를 돌려 코드를 생성하면, `malloc` 에러 없이 정상 동작할 것입니다.
+
+### New update
+
+사용자가 겪은 크래시(Segmentation Fault)를 해결하기 위해 `bin/mkanalyzer.py`에서 수정해야 할 부분은 **구조체(`struct`)에 값을 채워넣는 코드 생성 로직(`fillObjects`)**입니다.
+
+Data를 돌릴 때 MC 전용 변수(예: `genPartIdx`)는 벡터 크기가 0인데, 공통 변수(예: `pt`)의 개수만큼 루프를 돌며 접근하려고 해서 죽는 것입니다. 이를 방지하기 위해 **"벡터 크기가 충분할 때만 값을 가져오고, 아니면 0을 넣어라"**는 안전장치를 추가해야 합니다.
+
+**(이거 뭔소리냐면 electron 같은 object branch들은 array임. MC같은 경우 pt, eta, ..., genPartIdx[i] 같은 걸 가질 수 있음. 근데 data는 pt, eta같은건 있지만 gen 정보가 없음. 근데 지금 코드는 초기 버전의 zero initialization-그냥있건없건전부초기화 방식을 피하기 위해 데이터 없으면 그냥 정의 자체를 안하는데 이 경우 object 자체는 존재하기 때문에 array의 loop를 돌면서도 특정 branch는 없어서 Data 돌릴 때 에러가 발생한 것**
+그래서 그걸 고쳐준다는 소리임
+
+### 🛠️ 수정 대상 파일: `bin/mkanalyzer.py`
+
+파일의 뒷부분(약 1135~1140번째 줄 근처)에 있는 `structimpl.append` 부분을 찾아 교체해야 합니다.
+
+#### 1. 찾을 위치
+
+`for rtype, fldname, varname, count, countername in values:` 루프 안쪽입니다.
+
+#### ❌ 수정 전 (기존 코드)
+
+무조건 `i`번째 값을 가져오라고 시키는 코드입니다. (Data에서 MC 변수 접근 시 죽음)
+
+Python
+
+```
+            structimpl.append('        %s[i].%s\t= %s%s[i];' % (objname,
+                                                              fldname,
+                                                              cast,
+                                                              varname))
+```
+
+#### ✅ 수정 후 (교체할 코드)
+
+**삼항 연산자**를 사용하여, 벡터 크기(`size`)가 인덱스(`i`)보다 클 때만 값을 가져오도록 변경합니다.
+
+Python
+
+```
+            # [Fix] Partial Branch Existence in Structs (Safe Access)
+            # MC 변수(genPartIdx 등)가 Data에서 비어있을 때(Size=0) 접근하여 죽는 것 방지
+            structimpl.append('        %s[i].%s\t= (%s.size() > i) ? %s%s[i] : 0;' % (objname,
+                                                              fldname,
+                                                              varname,
+                                                              cast,
+                                                              varname))
+```
+
+---
+
+### 📝 적용 결과 (`eventBuffer.h`)
+
+이 수정을 적용하고 `mkanalyzer.py`를 다시 실행하면, 생성되는 C++ 코드가 아래와 같이 바뀝니다.
+
+**[Before]**
+
+C++
+
+```
+Electron[i].genPartIdx = Electron_genPartIdx[i]; // 비어있으면 사망
+```
+
+**[After]**
+
+C++
+
+```
+// 비어있으면 0을 넣음 (안전)
+Electron[i].genPartIdx = (Electron_genPartIdx.size() > i) ? Electron_genPartIdx[i] : 0; 
+```
+
+이렇게 하면 Data를 돌릴 때 MC 변수들은 안전하게 `0`으로 채워지며, 프로그램이 죽지 않고 정상적으로 동작하게 됩니다

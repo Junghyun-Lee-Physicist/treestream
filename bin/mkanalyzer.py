@@ -1051,16 +1051,54 @@ def main():
             choosename = branchname
         choose.append('  choose["%s"]\t= DEFAULT;' % choosename)
         setb.append('  if ( choose["%s"] )'   % choosename)
-        cmd = '    input->select("%s", \t%s);' % (branchname, varname)
-        if len(cmd) < 75:
+####        cmd = '    input->select("%s", \t%s);' % (branchname, varname)
+####        if len(cmd) < 75:
+####            setb.append(cmd)
+####        else:
+####            setb.append('    input->select("%s",' % branchname)
+####            setb.append('                   %s);' % varname)
+# above 4 lines are changed by Jh.Lee 18th Dec, 2025
+# [MODIFIED] Check existence before selecting (Super-Set Strategy)
+       
+####        # Branch가 파일에 존재할 때만 select를 호출하도록 보호
+####        cmd = '    if (input->present("%s")) input->select("%s", %s);' % \
+####              (branchname, branchname, varname)
+####
+####        # 긴 줄 처리 등은 무시하고, 위 한 줄로 깔끔하게 처리하거나
+####        # 필요하다면 줄바꿈 처리를 추가할 수 있습니다. 위 코드로 충분합니다.
+####        setb.append(cmd)
+# [MODIFIED] Above line changed by Jh.Lee 18th Dec, 2025
+        if count == 1:
+            # Scalar: Just check existence
+            cmd = '    if (input->present("%s")) input->select("%s", %s);' % \
+                  (branchname, branchname, varname)
             setb.append(cmd)
         else:
-            setb.append('    input->select("%s",' % branchname)
-            setb.append('                   %s);' % varname)
+            # Vector: Resize -> Select -> Clear pattern
+            cmd = '    if (input->present("%s")) { ' \
+                  '%s.resize(%d); ' \
+                  'input->select("%s", %s); ' \
+                  '%s.clear(); }' % \
+                  (branchname, varname, count, branchname, varname, varname)
+            setb.append(cmd)
 
+
+
+        # [SCALAR] count == 1
         if count == 1:
+            # 스칼라 변수 분기, trigger나 event, run 등등의 변수가 여기 저장
+            # nJet, nElectron 같은 다른 변수의 개수를 뜻하는 변수들(e.g. Jet_pt ...[nJet])
+            # 의 경우 mkvariables에서 아예 카운트를 안함
+            #    --> is_counter = (x[-1] == "*")
+            #    --> if is_counter:
+            #    -->    continue;
+            # 위 구현이 mkvariabe에 있으니 확인
             declare.append("  %s\t%s;" % (rtype, varname))
 
+            # [추가됨] 스칼라 변수는 0으로 초기화 (Branch가 없을 때 쓰레기 값 방지)
+            init.append("    %s\t= 0;" % varname)
+
+        # [VECTOR] count > 1 (else block)
         else:
             # this is either a vector or a variable length array
             if str.find(rtype, 'vector') > -1:
@@ -1080,6 +1118,7 @@ def main():
 		    
             else:
                 # VARIABLE LENGTH ARRAY
+                # Central NanoAOD sample은전부 array 선언이라 위 vector 분기는 의미 없긴 함
                 declarevec.append("  std::vector<%s>\t%s;" % (rtype, varname))
 ####                init.append("    %s\t= std::vector<%s>(%d,0);" % \
 ####                            (varname, rtype, count))
@@ -1164,10 +1203,24 @@ def main():
                 
             structdecl.append('    %s\t%s;' % (rtype, fldname))
 
-            structimpl.append('        %s[i].%s\t= %s%s[i];' % (objname,
+####            structimpl.append('        %s[i].%s\t= %s%s[i];' % (objname,
+####                                                              fldname,
+####                                                              cast,
+####                                                              varname))
+# Above 4 linesa are modified by Jh.Lee 18th Dec, 2025
+# To avoid empty vector, so why this happen?
+# MC has object vector like electrons, muons, jet, etc
+# MC's electron could have [ genPartIdx branch, pt branch, ... ]
+# BUT DATA ELECTRON COULD HAVE [ pt branch, NOT genPartIdx, ... ], so if you use above line,
+# then you could approch genPartIdx in Data sample even though they don't have genPartIdx branch
+            # [Fix] Partial Branch Existence in Structs (Safe Access)
+            # MC 변수(genPartIdx 등)가 Data에서 비어있을 때(Size=0) 접근하여 죽는 것 방지
+            structimpl.append('        %s[i].%s\t= (%s.size() > i) ? %s%s[i] : 0;' % (objname,
                                                               fldname,
+                                                              varname,
                                                               cast,
                                                               varname))
+
 
             selectimpl.append('            %s[i]\t= %s[j];' % (varname, varname))
 
