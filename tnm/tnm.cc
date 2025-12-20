@@ -5,11 +5,13 @@
 #include <iostream>
 #include <sstream>
 #include <map>
-#ifdef PROJECT_NAME
-#include "PhysicsTools/TheNtupleMaker/interface/tnm.h"
-#else
+//#ifdef PROJECT_NAME
+//#include "PhysicsTools/TheNtupleMaker/interface/tnm.h"
+//#else
 #include "tnm.h"
-#endif
+//#endif
+//2025-12-19: The 4 lines above were commented out by Jh.Lee
+
 using namespace std;
 // -----------------------------------------------------------------------------
 

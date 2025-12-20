@@ -6,11 +6,12 @@
 #include <cmath>
 #include <iomanip>
 #include <algorithm>
-#ifdef PROJECT_NAME
-#include "PhysicsTools/TheNtupleMaker/interface/pdg.h"
-#else
+//#ifdef PROJECT_NAME
+//#include "PhysicsTools/TheNtupleMaker/interface/pdg.h"
+//#else
 #include "pdg.h"
-#endif
+//#endif
+//2025-12-19: The 4 lines above were commented out by Jh.Lee
 
 //-----------------------------------------------------------------------------
 using namespace std;

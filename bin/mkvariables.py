@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # ----------------------------------------------------------------------------
 #  File:        mkvariables.py
 #
@@ -26,43 +26,38 @@
 #               22-Feb-2018 HBP adapt to improved treestream listing
 #               17-Jan-2020 HBP make compatible with Python 3
 # ----------------------------------------------------------------------------
-
-# ----------------------------------------------------------------------------
-# Rafactoring update for Python 3
-# Edditor:      Junghyun Lee
-# Email:        junghyun.lee@cern.ch
-# Fixes:        02-Dec-2025 JhLee 
-# ----------------------------------------------------------------------------              
-
-import os, sys, re, argparse
-from time import ctime
-
-# Check ROOT libaraies existence
+import os, sys, re
+from time import sleep, ctime
 try:
     import ROOT
-except ImportError:
-    sys.exit("\n\033[91m**Can not [import ROOT]. Please make sure ROOT is installed or related environment variables.\033[0m\n")    
+except:
+    sys.exit("\n** Please setup ROOT, then try again!\n")
+# ----------------------------------------------------------------------------
+def usage():
+    sys.exit('''
+    Usage:
+      mkvariables.py [options] <ntuple-filename> [<tree-name> [<tree-name2...]]
 
+    Options:
+      --usetree   Use the treename(s) as struct names
+    ''')
 # ----------------------------------------------------------------------------
-# Load treestream module
-# ----------------------------------------------------------------------------
-print("\t[mkvariables] : Will use \"treestream\" module. It will read the ntuple and help to extract TTree and it's branches type & name")
-print("\t[mkvariables] : Module is searched in CMSSW PhysicsTools first. If CMSSW is not setted, then program search libaray path at \"$TREESTREAM_PATH/lib/libtreestream\". So If you did not set \"$TREESTREAM_PATH\", please execute \"setup.sh\" or \"setup.csh\".")
+# load treestream module
 try:
     from PhysicsTools.TheNtupleMaker.AutoLoader import *
-except ImportError:
+except:
     try:
-        print("\tloading treestream...")
-        # ROOT handles env vars in paths, but catching load errors is safer
-        if ROOT.gSystem.Load("$TREESTREAM_PATH/lib/libtreestream") < 0:
-            raise OSError("Load failed")
-    except Exception as e:
-        print(f"\t** libtreestream not found: {e}")
+        print("\tloading treestream\n")
+        ROOT.gSystem.Load("$TREESTREAM_PATH/lib/libtreestream")
+    except:
+        print("\t** libtreestream not found")
         sys.exit('''
-    Try installing the treestream package:
+    try installing the treestream package:
     
     cd
-    mkdir -p external/bin external/lib external/include
+    mkdir -p external/bin
+    mkdir -p external/lib
+    mkdir -p external/include
     cd external
     git clone http://github.com/hbprosper/treestream.git
 
@@ -70,206 +65,181 @@ except ImportError:
     cd treestream
     make
     make install
-    ''')
-print("\t[mkvariables] : Module is succesfully setted\n")
-
-
+    ''')        
 # ----------------------------------------------------------------------------
-# Regex Compilation
-# ----------------------------------------------------------------------------
-# Using raw strings (r'') for regex patterns is best practice in Python
-re_getvtype  = re.compile(r'(?<=vector[<]).+(?=[>])')
-re_namespace = re.compile(r'^(edm|reco|pat)')
-re_patname   = re.compile(r'(?<=pat)[a-z]+[1-9]*')
-re_reconame  = re.compile(r'(?<=reco)[a-z]+[1-9]*')
-re_genname   = re.compile(r'^(gen[a-z]+|edm[a-z]+)')
-re_countname = re.compile(r'(?<=^n)(pat|reco)')
-re_arraytype = re.compile(r'\[[0-9]+\]')
-
-# ----------------------------------------------------------------------------
-# Main Logic
+# extract vector type from vector<type>
+getvtype = re.compile('(?<=vector[<]).+(?=[>])')
+namespace= re.compile('^(edm|reco|pat)')
+patname  = re.compile('(?<=pat)[a-z]+[1-9]*')
+reconame = re.compile('(?<=reco)[a-z]+[1-9]*')
+genname  = re.compile('^(gen[a-z]+|edm[a-z]+)')
+countname= re.compile('(?<=^n)(pat|reco)')
+arraytype= re.compile('\[[0-9]+\]')
 # ----------------------------------------------------------------------------
 def main():
+    # get command line arguments
+    argv = sys.argv[1:]
+    argc = len(argv)
+    if argc < 1: usage()
 
-    # 1. Argument Parsing (Replaces manual sys.argv)
-    parser = argparse.ArgumentParser(
-        description="Scan a simple ntuple and create variables.txt"
-    )
-    parser.add_argument("filename", help="Path to the ntuple file")
-    parser.add_argument("treenames", nargs="*", help="Optional tree names")
-    parser.add_argument("--usetree", action="store_true", help="Use the treename as struct names")
-    
-    args = parser.parse_args()
-    
-    filename = args.filename
-    usetree = args.usetree
-    
-    print("\t[mkvariables] : Setted argument")
-
-
-    if not os.path.exists(filename):
-        sys.exit(f"\t** file {filename} not found")
-
-    # 2. Setup ROOT treestream
-    if args.treenames:
-        # Join list of tree names into a single string
-        treename_str = ' '.join(args.treenames)
-        print("join 모듈을 통해 tree string들을 조합함. 근데 왜 굳이 여러 트리 이름을 받지? 이거 variables 목록의 tree 이름까지 반영해서 analyzer 만드나보다.")
-        print(f"Trees: {treename_str}")
-        stream = ROOT.itreestream(filename, treename_str)
-        if not stream.good():
-            sys.exit("\t** hmmmm...something amiss here (stream not good)!")
-        
-        # In Python 3, map returns an iterator, convert to list if needed immediately
-        tname = list(stream.treenames())
-
-        print("ROOT에서 itreestream으로 가져온 streaem 변수에 대해 treenames()를 사용하고 그걸 다시 list로 형변환함.")
-
+    # check whether to use treename as struct name
+    if '--usetree' in argv:
+        argv.remove('--usetree')
+        usetree = True
+        argc   -= 1
     else:
-        print("트리 이름 지정 안해줬을 때 분기. 이 경우 stream에서 모든 tree이름들을 tree().GetName()을 통해 반환할까?")
-
-        stream = ROOT.itreestream(filename)
-        if not stream.good():
-            sys.exit("\t** hmmmm...something amiss here (stream not good)!")
+        usetree = False
         
-        treename_str = stream.tree().GetName()
-        tname = [treename_str]
-        print(f"살펴보자 --> tname : {tname}")
+    # get ntuple file name
+    filename = argv[0]
+    if not os.path.exists(filename):
+        sys.exit("\t** file %s not found" % filename)
+        
+    # 2nd argument is the TTree name
+    if argc > 1:
+        # Can have more than one tree
+        treename = joinfields(argv[1:], ' ')
+        print(treename)
+        stream   = ROOT.itreestream(filename, treename)
+        if not stream.good():
+            sys.exit("\t** hmmmm...something amiss here!")
+    
+        treenames= stream.treenames();
+        tname    = [ x for x in treenames ]
+    else:
+        stream   = ROOT.itreestream(filename)
+        if not stream.good():
+            sys.exit("\t** hmmmm...something amiss here!" )
+        
+        treename = stream.tree().GetName()
+        tname    = [treename]
 
+    # list branches and leaves
+    # write out variables.txt after scanning ntuple listing
+    print
+    print("==> file: %s" % filename)
 
-    # 3. Prepare Output
-    print(f"\n==> file: {filename}")
     for name in tname:
-        print(f"==> tree: {name}")
+        print("==> tree: %s" % name)
     print("==> output: variables.txt")
 
-    skipped_at_least_one = False
+    out = open("variables.txt", "w")
+    out.write("Tree %s\t%s\n" % (tname[0], ctime()))
+    for name in tname[1:]:
+        out.write("Tree %s\n" % name)
+    out.write("\n")
+
+    skipped_at_least_one = False    
+    skipped = open("variables_skipped.txt", "w")
     
-    # Use context managers (with open) for safe file handling
-    with open("variables.txt", "w") as out, open("variables_skipped.txt", "w") as skipped:
-        
-        # Write Header
-        out.write(f"Tree {tname[0]}\t{ctime()}\n")
-        for name in tname[1:]:
-            out.write(f"Tree {name}\n")
-        out.write("\n")
+    # get ntuple listing
+    dupname = {} # to keep track of duplicate names
 
-        # 4. Process Ntuple Listing
-        dupname = {} # Track duplicate names
+    records = [str.split(x) for x in str.split(stream.str(),'\n')]
+    for x in records:
 
-        # Modern string splitting
-        # Ensure we work with strings. If stream.str() returns bytes, decode it.
-        raw_stream = stream.str()
-        if isinstance(raw_stream, bytes):
-            raw_stream = raw_stream.decode('utf-8')
+        # skip junk
+        if len(x) == 0: continue
+        if x[0] in ["File", "Tree", "Entries", ""]: continue
 
-        lines = raw_stream.split('\n')
-        records = [line.split() for line in lines if line.strip()]
+        # Fields:
+        # .. branch / type [maximum count [*]]
 
-        for x in records:
-            # Skip empty or header lines
-            if not x or x[0] in ["File", "Tree", "Entries"]:
-                continue
+        # skip variables flagged as leaf counters
+        iscounter = x[-1] == "*" # look for a leaf counter
+        if iscounter: continue
 
-            # Fields logic: branch / type [maximum count [*]]
-            
-            # Skip leaf counters
-            is_counter = (x[-1] == "*")
-            if is_counter:
-                continue
-
-            # Parse fields based on length
-            has_counter = False
+        # check if the current branch has a leaf counter
+        hascounter = False
+        if len(x) == 4:
+            a, branch, c, btype = x
             maxcount = 1
-            lc = "" # leaf counter name
+        elif len(x) == 5:
+            a, branch, c, btype, maxcount = x
+            maxcount = atoi(maxcount[1:-1])
+        elif len(x) == 7:
+            hascounter = True
+            a, branch, c, btype, maxcount, d, countername = x
+            maxcount = int(maxcount[1:-1])
+        else:
+            sys.exit("\t**hmmm...not sure what to do with:\n\t%s\n\tchoi!" % x)
             
-            try:
-                if len(x) == 4:
-                    _, branch, _, btype = x
-                elif len(x) == 5:
-                    _, branch, _, btype, count_str = x
-                    maxcount = int(count_str[1:-1]) # Modern int() conversion
-                elif len(x) == 7:
-                    has_counter = True
-                    _, branch, _, btype, count_str, _, countername = x
-                    maxcount = int(count_str[1:-1])
-                else:
-                    sys.exit(f"\t**hmmm...not sure what to do with:\n\t{x}\n\tchoi!")
-            except ValueError:
-                print(f"Warning: Parsing error on line: {x}")
-                continue
-
-            # Check Types to Skip
-            if btype in ['TLorentzVector', 'TRefArray', 'TRef'] or re_arraytype.search(branch):
-                skipped.write(f'{x[1]}\t{x[3]}\t{x[4]}\n')
-                skipped_at_least_one = True
-                continue
+        # get branch type in C++ form (not, e.g.,  Double_t)
+        if btype in ['TLorentzVector', 'TRefArray', 'TRef']:
+            skipped.write('%s\t%s\t%s\n' % (x[1], x[3], x[4]))
+            skipped_at_least_one = True
+            continue
+        if len(arraytype.findall(branch)) > 0:
+            skipped.write('%s\t%s\t%s\n' % (x[1], x[3], x[4]))
+            skipped_at_least_one = True
+            continue            
             
-            # Normalize Branch Type
-            # Using method chaining for string manipulation
-            btype = btype.lower().replace("_t", "")
+        btype = str.replace(str.lower(btype), "_t", "")
+        vtype = getvtype.findall(btype)
+        if len(vtype) == 1:
+            btype = vtype[0] # vector type
+            maxcount = 50   # default maximum count for vectors
+            btype = "vector<%s>" % btype
             
-            vtype_match = re_getvtype.findall(btype)
-            if len(vtype_match) == 1:
-                inner_type = vtype_match[0]
-                maxcount = 50   # Default max for vectors
-                btype = f"vector<{inner_type}>"
-            
-            if has_counter:
-                lc = countername
+        if hascounter:
+            lc = countername
+        else:
+            lc = ""
 
-            # 5. Name Processing Logic
-            t = branch.split('.')
-            t[0] = t[0].split('/')[-1]
-            bname = t[0]
+        # make a name for yourself
+        # but take care of duplicate names
+        t = str.split(branch, '.')
 
-            if len(t) > 1:
-                # Handle TNM branch names
-                t[0] = t[0].split('_')[0]
+        t[0]  = t[0].split('/')[-1]
+        bname = t[0]
 
-                a = re_patname.findall(t[0])
-                if not a:
-                    a = re_reconame.findall(t[0])
-                    if not a:
-                        a = re_genname.findall(t[0])
-                
-                if a:
-                    t[0] = a[0]
-            else:
-                if re_countname.findall(t[0]):
-                    # re.sub returns string, split it
-                    t[0] = re_countname.sub("", t[0]).split('_')[0]
+        if len(t) > 1:
+            # handle TNM branch names
+            #t[0] = lower(t[0])
 
-            # Duplicate Name Handling
-            key = t[0]
-            if key not in dupname:
-                dupname[key] = [bname, 0]
-            
-            # Check if the mapped name is different from original branch name
-            if dupname[key][0] != bname:
-                dupname[key][1] += 1
-            
-            if dupname[key][1] > 0:
-                t[0] = f"{t[0]}{dupname[key][1]}"
+            t[0] = t[0].split('_')[0]
 
-            # Final Name Construction
-            t[0] = re_namespace.sub("", t[0])
-            name = '_'.join(t)
+            a = patname.findall(t[0])
+            if len(a) == 0:
+                a = reconame.findall(t[0])
+                if len(a) == 0:
+                    a = genname.findall(t[0])
+            if len(a) != 0:
+                t[0] = a[0]
+        else:
+            if len(countname.findall(t[0])) > 0:
+                #t[0] = split(lower(countname.sub("", t[0])),'_')[0]
+                t[0] = str.split(countname.sub("", t[0]),'_')[0]
+        #t[0] = replace(t[0], 'helper', '')
 
-            if usetree:
-                # The treename may include a directory, take last part
-                clean_treename = treename_str.split('/')[-1]
-                name = f"{clean_treename}_{name}"
-            
-            # Write Output
-            out.write(f"{btype}/{branch}/{name}/{maxcount} {lc}\n")
+        # check for duplicate names
+        key = t[0]
+        if not (key in dupname):
+            dupname[key] = [bname, 0]			
+        if dupname[key][0] != bname:
+            a, n = dupname[key]
+            n += 1
+            dupname[key] = [bname, n]
 
-    # Cleanup skipped file if empty
+        if dupname[key][1] > 0:
+            t[0] = "%s%d" % (t[0], dupname[key][1])
+        # first strip away namespace
+        t[0] = namespace.sub("", t[0])
+        name = '_'.join(t) #fields(t, '_')
+
+        # check whether to include treename in name
+        if usetree:
+            # the treename may include a directory.
+            treename = treename.split('/')[-1]
+            name     = '%s_%s' % (treename, name)
+        
+        # write out info for current branch/leaf
+        record = "%s/%s/%s/%d %s\n" % (btype, branch, name, maxcount, lc)
+        out.write(record)
+    out.close()
+    
+    skipped.close()
     if not skipped_at_least_one:
-        try:
-            os.remove("variables_skipped.txt")
-        except OSError:
-            pass
-
-if __name__ == "__main__":
-    main()
+        os.system("rm -rf variables_skipped.txt")
+# ----------------------------------------------------------------------------
+main()

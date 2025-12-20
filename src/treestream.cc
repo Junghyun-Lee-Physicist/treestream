@@ -95,11 +95,13 @@
 #include "TObjArray.h"
 #include "TObjString.h"
 
-#ifdef PROJECT_NAME
-#include "PhysicsTools/TheNtupleMaker/interface/treestream.h"
-#else
+//#ifdef PROJECT_NAME
+//#include "PhysicsTools/TheNtupleMaker/interface/treestream.h"
+//#else
 #include "treestream.h"
-#endif
+//#endif
+//2025-12-19: The 4 lines above were commented out by Jh.Lee
+
 //----------------------------------------------------------------------------
 using namespace std;
 
@@ -1906,10 +1908,9 @@ itreestream::_select(string namen, void* address, int maxsize, char srctype,
     }
   else
     {
-////      warning("itreestream - branch " + namen + " not found");
-////      _statuscode = kBADBRANCH;
-      // Jh.Lee modified above 2 line, 
-      // If treestream could not find specific branch, then it will occur "fetal error"
+      //warning("itreestream - branch " + namen + " not found");
+      //_statuscode = kBADBRANCH;
+      //2025-12-19: The two lines above were commented out by Jh.Lee; the line below was added.
       fatal("itreestream - CRITICAL ERROR: Branch '" + namen + "' not found! Aborting.");
     }
 }  
@@ -2319,7 +2320,7 @@ otreestream::add(string namen, vector<float>& d)
 }
 
 void 
-otreestream::add                                                                                    (string namen, vector<long>& d)
+otreestream::add(string namen, vector<long>& d)
 {
   _add(namen, &d, d.size(), 'L', 'L', true);
 }

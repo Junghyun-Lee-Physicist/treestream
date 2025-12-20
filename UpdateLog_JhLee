@@ -1,0 +1,74 @@
+
+# 19th December 2025 
+
+🛠️ Modified by : Junghyun Lee
+
+
+2025-12-19: Added a user-configurable compiler selection option (gcc/clang) in the Makefile by Jh.Lee
+
+## 1. Decoupling CMSSW dependencies from *treestream* and generated *analyzers*, with manual compiler configuration
+
+### Removal of CMSSW dependency
+
+- src/treestream.cc
+```c++
+//#ifdef PROJECT_NAME
+//#include "PhysicsTools/TheNtupleMaker/interface/treestream.h"
+//#else
+#include "treestream.h"
+//#endif
+```
+
+- src/pdg.cc
+- tnm/tnm.cc
+- tnm/tnm.h
+Removal of the **PROJECT_NAME**-based branching, following the same approach used in *treestream*.
+
+## 2. Makefile update log
+
+- **OS & Compiler Selection:** Added argument support for manual OS/compiler target (e.g., `make OS_SELECT=macos`).
+
+- **Python 3 Support:** Set `python3` as the default interpreter (configurable via `PYTHON_CMD`) to ensure modern environment compatibility.
+
+- **ROOT 6 Compatibility:** Switched to `rootcling` for dictionary generation.
+
+- **Cleanup Logic:** Updated `clean` and `uninstall` targets for complete artifact removal.
+
+## 3. mkvarible update log
+
+### 1. Ported to Python 3
+- Updated print syntax and string handling.
+- Handled bytes-to-string decoding for ROOT outputs.
+
+### 2. Argument Parsing
+- Replaced manual sys.argv parsing with 'argparse' library.
+
+### 3. File Handling
+- Used context managers ('with open(...)') for safe file I/O.
+
+### 4. Dependency Update
+- Removed PhysicsTools (CMSSW) dependency.
+- FORCED to load 'libtreestream' from local $TREESTREAM_PATH.
+
+## 4. mkanalyzer update log and remaining issues
+
+
+> - **Robust Struct Logic:** The `fillObjects()` mechanism has been completely rewritten. It now determines struct size using the `Leaf Counter` (e.g., `nElectron`) first. If the counter is missing, it scans all constituent vectors for the maximum size.
+>     
+> - **Crash Prevention (Ghost Objects):** Implemented ternary checks `(vec.size() > i) ? vec[i] : 0` when filling structs. This allows the analyzer to process Data Ntuples (missing MC-specific branches like `genPartIdx`) without segmentation faults.
+>     
+> - **Environment:** Ported the script to **Python 3**. Updated the Author field to **Junghyun Lee**.
+>     
+> - **Dynamic Makefile:** The generated `Makefile` now automatically detects the OS (macOS/Linux) and allows compiler selection (`make COMPILER_SELECT=clang`), replacing the old hardcoded logic.
+>     
+> - **Debug Mode:** The generated C++ code now includes a `debug` boolean flag and verbose logging in `initBuffers` and `fillObjects` to trace data loading issues.
+>     
+
+**Remaining Issues & Notes**
+
+> 1. **Scalar Initialization:** While scalar variables are now initialized to `0` in `initBuffers()`, they are not automatically reset _between events_ in the generated `eventBuffer`. If a branch is present in File A but missing in File B (chained), File B might inherit the last value from File A. _Mitigation: Since `treestream` aborts on missing branches by default unless using the new robust logic, this is less of a risk, but users should be aware._
+>     
+> 2. **Vector Resizing Performance:** The safety check `(vec.size() > i)` inside the loop adds a small conditional overhead per object. For standard analysis (e.g., < 100 objects), this is negligible compared to I/O time, but worth noting for extreme high-performance requirements.
+>     
+> 3. **`treestream` Dependency:** The generated code still relies heavily on `treestream`'s `present()` and `select()` behavior. Ensure `libtreestream` is compiled with the same ROOT version as the analyzer.
+>

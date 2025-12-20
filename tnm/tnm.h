@@ -21,11 +21,13 @@
 #include "TStyle.h"
 #include "TApplication.h"
 
-#ifdef PROJECT_NAME
-#include "PhysicsTools/TheNtupleMaker/interface/eventBuffer.h"
-#else
+//#ifdef PROJECT_NAME
+//#include "PhysicsTools/TheNtupleMaker/interface/eventBuffer.h"
+//#else
 #include "eventBuffer.h"
-#endif
+//#endif
+//2025-12-19: The 4 lines above were commented out by Jh.Lee
+
 //-----------------------------------------------------------------------------
 
 struct outputFile
