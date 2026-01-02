@@ -77,11 +77,12 @@ TEMPLATE_H = \
 #include <cassert>
 #include "treestream.h"
 
+// Global debug flag for eventBuffer diagnostics.
+// Set true in your analyzer to print branch wiring and initialization details.
+extern bool eventBufferDebug;
+
 struct eventBuffer
 {
-  // Debug flag for verbose output
-  bool debug;
-
   //--------------------------------------------------------------------------
   // --- Declare variables
   //--------------------------------------------------------------------------
@@ -103,11 +104,10 @@ struct eventBuffer
   //--------------------------------------------------------------------------
   // Constructor: Read-Only
   //--------------------------------------------------------------------------
-  eventBuffer() : debug(true), input(0), output(0), choose(std::map<std::string, bool>()) {}
+  eventBuffer() : input(0), output(0), choose(std::map<std::string, bool>()) {}
 
   eventBuffer(itreestream& stream, std::string varlist="")
-  : debug(true), // Set to false to disable verbose logging
-    input(&stream),
+  : input(&stream),
     output(0),
     choose(std::map<std::string, bool>())
   {
@@ -123,7 +123,7 @@ struct eventBuffer
     
     // If specific vars requested, parse varlist
     if ( !DEFAULT ) {
-        if(debug) std::cout << "[Debug] Selecting specific branches..." << std::endl;
+        if(eventBufferDebug) std::cout << "[eventBuffer] Selecting specific branches..." << std::endl;
         std::istringstream sin(varlist);
         while ( sin ) {
             std::string key;
@@ -146,7 +146,7 @@ struct eventBuffer
   // Constructor: Write-Only
   //--------------------------------------------------------------------------
   eventBuffer(otreestream& stream)
-  : debug(true), input(0), output(&stream)
+  : input(0), output(&stream)
   {
     initBuffers();
     %(addb)s
@@ -154,7 +154,7 @@ struct eventBuffer
 
   void initBuffers()
   {
-    if(debug) std::cout << "[Debug] initBuffers() called." << std::endl;
+    if(eventBufferDebug) std::cout << "[eventBuffer] initBuffers() called." << std::endl;
 %(init)s
   }
       
@@ -197,8 +197,13 @@ TEMPLATE_CC = \
 
 using namespace std;
 
+// Global debug flag for eventBuffer diagnostics.
+// Set true to print branch wiring and initialization details.
+bool eventBufferDebug = false;
+
 int main(int argc, char** argv)
 {
+
   // Get command line arguments
   commandLine cl(argc, argv);
     
@@ -469,7 +474,7 @@ def main():
         # 1. Selection (choose & setb)
         choosename = branchname.split('/')[-1] if single_tree else branchname
         choose.append(f'    choose["{choosename}"] = DEFAULT;')
-        setb.append(f'    if ( choose["{choosename}"] )')
+        setb.append(f'    if ( choose["{choosename}"] ) {{')
 
         if count == 1:
             # SCALAR
@@ -478,8 +483,13 @@ def main():
             init.append(f"    {varname}\t= 0;")
             
             # [Fix] Safe Select
-            cmd = f'      if (input->present("{branchname}")) input->select("{branchname}", {varname});'
-            setb.append(cmd)
+            setb.append(f'      if (eventBufferDebug) std::cout << "[eventBuffer] branch {branchname}: ";')
+            setb.append(f'      if (input->present("{branchname}")) {{')
+            setb.append(f'        if (eventBufferDebug) std::cout << "present" << std::endl;')
+            setb.append(f'        input->select("{branchname}", {varname});')
+            setb.append(f'      }} else if (eventBufferDebug) {{')
+            setb.append(f'        std::cout << "missing" << std::endl;')
+            setb.append(f'      }}')
             
             # Add to output
             addb.append(f'    output->add("{branchname}", {varname});')
@@ -500,11 +510,15 @@ def main():
                 # [Fix] Do NOT initialize vectors (prevents Ghost Objects)
                 
                 # [Fix] Resize -> Select -> Clear Pattern
-                cmd = f'      if (input->present("{branchname}")) {{ ' \
-                      f'{varname}.resize({count}); ' \
-                      f'input->select("{branchname}", {varname}); ' \
-                      f'{varname}.clear(); }}'
-                setb.append(cmd)
+                setb.append(f'      if (eventBufferDebug) std::cout << "[eventBuffer] branch {branchname}: ";')
+                setb.append(f'      if (input->present("{branchname}")) {{')
+                setb.append(f'        if (eventBufferDebug) std::cout << "present" << std::endl;')
+                setb.append(f'        {varname}.resize({count});')
+                setb.append(f'        input->select("{branchname}", {varname});')
+                setb.append(f'        {varname}.clear();')
+                setb.append(f'      }} else if (eventBufferDebug) {{')
+                setb.append(f'        std::cout << "missing" << std::endl;')
+                setb.append(f'      }}')
                 
                 # Group into Objects for Structs
                 if objname:
@@ -518,6 +532,8 @@ def main():
 
                 # Add to output
                 addb.append(f'    output->add("{branchname}", {varname});')
+
+        setb.append('    }')
 
     #-------------------------------------------------------------------------
     # Struct Generation (The Critical Part)
@@ -538,7 +554,7 @@ def main():
     # Generate Structs
     structimplall.append('  void fillObjects()')
     structimplall.append('  {')
-    structimplall.append('    if(debug) std::cout << "[Debug] fillObjects() called." << std::endl;')
+    structimplall.append('    if(eventBufferDebug) std::cout << "[eventBuffer] fillObjects() called." << std::endl;')
 
     sorted_objects = sorted(vectormap.keys())
     
@@ -580,13 +596,13 @@ def main():
         if counter_var:
             # Scenario A: We have a trusted leaf counter (e.g., nElectron)
             structimpl.append(f'    count = {counter_var};')
-            structimpl.append(f'    if(debug && count > 0) std::cout << "  [Debug] {obj} count via {counter_var}: " << count << std::endl;')
+            structimpl.append(f'    if(eventBufferDebug && count > 0) std::cout << "  [eventBuffer] {obj} count via {counter_var}: " << count << std::endl;')
         else:
              # Scenario B: No counter, scan vectors for max size
              structimpl.append('    // No counter found, scanning vectors for max size')
              for f in fields:
                  structimpl.append(f'    if({f["var"]}.size() > count) count = {f["var"]}.size();')
-             structimpl.append(f'    if(debug && count > 0) std::cout << "  [Debug] {obj} count inferred: " << count << std::endl;')
+             structimpl.append(f'    if(eventBufferDebug && count > 0) std::cout << "  [eventBuffer] {obj} count inferred: " << count << std::endl;')
 
         structimpl.append(f"    {obj}.resize(count);")
         structimpl.append(f"    for(size_t i=0; i < count; ++i)")
