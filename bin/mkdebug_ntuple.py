@@ -5,45 +5,26 @@
 # -----------------------------------------------------------------------------
 import argparse
 import sys
-from ctypes import (
-    c_bool,
-    c_double,
-    c_float,
-    c_int,
-    c_long,
-    c_longlong,
-    c_short,
-    c_ubyte,
-    c_uint,
-    c_ulong,
-    c_ulonglong,
-    c_ushort,
-)
+from array import array
 
 try:
     import ROOT as rt
 except ImportError:
     sys.exit("\n\033[91m**Can not [import ROOT]. Please make sure ROOT is installed.\033[0m\n")
 
-try:
-    from treestream import otreestream
-except Exception as exc:
-    sys.exit(f"\n\033[91m**Can not import treestream otreestream: {exc}\033[0m\n")
-
-
-CTYPE_MAP = {
-    "bool": c_bool,
-    "double": c_double,
-    "float": c_float,
-    "int": c_int,
-    "long": c_long,
-    "long64": c_longlong,
-    "short": c_short,
-    "uchar": c_ubyte,
-    "uint": c_uint,
-    "ulong": c_ulong,
-    "ulong64": c_ulonglong,
-    "ushort": c_ushort,
+SCALAR_TYPE_MAP = {
+    "bool": ("b", "O"),
+    "double": ("d", "D"),
+    "float": ("f", "F"),
+    "int": ("i", "I"),
+    "long": ("l", "L"),
+    "long64": ("q", "L"),
+    "short": ("h", "S"),
+    "uchar": ("B", "b"),
+    "uint": ("I", "i"),
+    "ulong": ("L", "l"),
+    "ulong64": ("Q", "l"),
+    "ushort": ("H", "s"),
 }
 
 VECTOR_TYPE_MAP = {
@@ -145,7 +126,8 @@ def main():
     if not records:
         sys.exit("** No variables found to write.")
 
-    stream = otreestream(args.output, treename, "debug ntuple")
+    root_file = rt.TFile(args.output, "RECREATE")
+    tree = rt.TTree(treename, "debug ntuple")
 
     counter_max = {}
     for rtype, branchname, varname, maxcount, counter in records:
@@ -154,25 +136,29 @@ def main():
 
     counters = {}
     for counter in sorted(counter_max):
-        counters[counter] = c_int()
-        stream.add(counter, counters[counter])
+        counters[counter] = array("i", [0])
+        tree.Branch(counter, counters[counter], f"{counter}/I")
 
     scalars = {}
     vectors = {}
 
     for rtype, branchname, varname, maxcount, counter in records:
+        branch_leaf = branchname
+        if branchname.startswith(f"{treename}/"):
+            branch_leaf = branchname.split("/", 1)[1]
         if maxcount == 1:
-            ctype = CTYPE_MAP.get(rtype)
-            if ctype is None:
+            scalar_info = SCALAR_TYPE_MAP.get(rtype)
+            if scalar_info is None:
                 raise ValueError(f"Unsupported scalar type: {rtype}")
-            scalars[varname] = ctype()
-            stream.add(branchname, scalars[varname])
+            typecode, leafcode = scalar_info
+            scalars[varname] = array(typecode, [0])
+            tree.Branch(branch_leaf, scalars[varname], f"{branch_leaf}/{leafcode}")
         else:
             vector_type = VECTOR_TYPE_MAP.get(rtype)
             if vector_type is None:
                 raise ValueError(f"Unsupported vector type: {rtype}")
-            vectors[varname] = rt.vector(vector_type)()
-            stream.add(branchname, vectors[varname])
+            vectors[varname] = rt.std.vector(vector_type)()
+            tree.Branch(branch_leaf, vectors[varname])
 
     for entry in range(args.entries):
         counter_values = {}
@@ -184,21 +170,22 @@ def main():
                 value = maxcount
             else:
                 value = min(maxcount, (entry % 3) + 1)
-            counters[counter].value = value
+            counters[counter][0] = value
             counter_values[counter] = value
 
         var_index = 0
         for rtype, branchname, varname, maxcount, counter in records:
             if maxcount == 1:
-                scalars[varname].value = scalar_value(rtype, entry, var_index)
+                scalars[varname][0] = scalar_value(rtype, entry, var_index)
             else:
                 size = counter_values.get(counter, min(maxcount, (entry % 3) + 1))
                 fill_vector(vectors[varname], rtype, entry, var_index, size)
             var_index += 1
 
-        stream.commit()
+        tree.Fill()
 
-    stream.close()
+    tree.Write()
+    root_file.Close()
     print(f"==> Wrote {args.entries} events to {args.output} (tree: {treename})")
 
 
