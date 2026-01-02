@@ -197,9 +197,13 @@ TEMPLATE_H =\
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <map>
 #include <cassert>
 #include "treestream.h"
+
+// Toggle eventBuffer debug logging at runtime.
+static bool eventBufferDebug = false;
 
 struct eventBuffer
 {
@@ -303,6 +307,16 @@ struct eventBuffer
     item != indexmap.end();
     ++item)
     item->second.clear();
+
+    if (eventBufferDebug)
+      {
+        debugPrint(entry);
+      }
+  }
+
+  void debugPrint(int entry) const
+  {
+%(debug)s
   }
 
   void select(std::string objname)
@@ -994,6 +1008,7 @@ def main():
     addb      = []
     impl      = []
     choose    = []
+    debug     = []
     
     # get all leaf counters
     counters = set()
@@ -1004,6 +1019,8 @@ def main():
     for name in counters:
         declare.append("  %s\t%s;" % ('int', name))
         addb.append('  output->add("%s", \t%s);' % (name, name))
+        debug.append('    std::cout << "  %s = " << %s << std::endl;' % \
+                     (name, name))
     declare.append('')
     addb.append('')
 
@@ -1070,17 +1087,28 @@ def main():
 # [MODIFIED] Above line changed by Jh.Lee 18th Dec, 2025
         if count == 1:
             # Scalar: Just check existence
-            cmd = '    if (input->present("%s")) input->select("%s", %s);' % \
-                  (branchname, branchname, varname)
-            setb.append(cmd)
+            setb.append('  {')
+            setb.append('    bool has_%d = input->present("%s");' % \
+                        (index, branchname))
+            setb.append('    if (eventBufferDebug)')
+            setb.append('      std::cout << "eventBuffer init: branch %s present="'
+                        ' << (has_%d ? "yes" : "no") << std::endl;' % \
+                        (branchname, index))
+            setb.append('    if (has_%d) input->select("%s", %s);' % \
+                        (index, branchname, varname))
+            setb.append('  }')
         else:
             # Vector: Resize -> Select -> Clear pattern
-            cmd = '    if (input->present("%s")) { ' \
-                  '%s.resize(%d); ' \
-                  'input->select("%s", %s); ' \
-                  '%s.clear(); }' % \
-                  (branchname, varname, count, branchname, varname, varname)
-            setb.append(cmd)
+            setb.append('  {')
+            setb.append('    bool has_%d = input->present("%s");' % \
+                        (index, branchname))
+            setb.append('    if (eventBufferDebug)')
+            setb.append('      std::cout << "eventBuffer init: branch %s present="'
+                        ' << (has_%d ? "yes" : "no") << std::endl;' % \
+                        (branchname, index))
+            setb.append('    if (has_%d) { %s.resize(%d); input->select("%s", %s); %s.clear(); }' % \
+                        (index, varname, count, branchname, varname, varname))
+            setb.append('  }')
 
 
 
@@ -1097,6 +1125,8 @@ def main():
 
             # [추가됨] 스칼라 변수는 0으로 초기화 (Branch가 없을 때 쓰레기 값 방지)
             init.append("    %s\t= 0;" % varname)
+            debug.append('    std::cout << "  %s = " << %s << std::endl;' % \
+                         (varname, varname))
 
         # [VECTOR] count > 1 (else block)
         else:
@@ -1128,6 +1158,23 @@ def main():
                     sys.exit("** error ** array %s does not have a "\
                                  "leafcounter name" % varname)
                 branchname += "[%s]" % countername
+
+            debug.append('    std::cout << "  %s size=" << %s.size();' % \
+                         (varname, varname))
+            debug.append('    if (!%s.empty())' % varname)
+            debug.append('      {')
+            debug.append('        std::cout << " values=[";')
+            debug.append('        size_t max_print = %s.size() < 3 ? %s.size() : 3;' % \
+                         (varname, varname))
+            debug.append('        for (size_t i = 0; i < max_print; ++i)')
+            debug.append('          {')
+            debug.append('            if (i) std::cout << ", ";')
+            debug.append('            std::cout << %s[i];' % varname)
+            debug.append('          }')
+            debug.append('        if (%s.size() > max_print) std::cout << ", ...";' % varname)
+            debug.append('        std::cout << "]";')
+            debug.append('      }')
+            debug.append('    std::cout << std::endl;')
 
         cmd = '  output->add("%s", \t%s);' % (branchname, varname)
         if len(cmd) < 75:
@@ -1332,6 +1379,7 @@ def main():
     # Create C++ code
 
     declarevec += [""] + declare
+    debug.insert(0, '    std::cout << "eventBuffer debug entry " << entry << std::endl;')
     names = {'NAME': str.upper(filename),
              'name': filename,
              'time': ctime(),
@@ -1341,6 +1389,7 @@ def main():
              'setb':       join("  ", setb, "\n"),
              'choose':     join("  ", choose, "\n"),
              'addb':       join("  ", addb, "\n"),
+             'debug':      join("", debug, "\n"),
              'structdecl': join("", structdecl, "\n"),
              'structimpl': join("", structimpl, "\n"),
              'structimplall': join("", structimplall, "\n"),
@@ -1415,4 +1464,3 @@ echo "TNM_PATH=${TNM_PATH}"
     print("\tto build shared library libtnm.so\n")
 #------------------------------------------------------------------------------
 main()
-
