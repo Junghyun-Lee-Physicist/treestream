@@ -3,36 +3,81 @@
 # Description: Create ntuple analyzer using information supplied in a
 #              variables.txt file. (See mkvariables.py).
 #
-# 쉬운 설명:
-# - mkanalyzer.py는 variables.txt를 읽어 변수/브랜치 정보를 모으고,
-#   eventBuffer가 쓸 C++ 코드(헤더/소스)를 템플릿으로 만든다.
-# - eventBuffer 생성자는 스트림이 읽을 수 있는지 확인한 다음
-#   initBuffers()로 변수 기본값을 초기화하고, choose 맵에 선택 여부를 표시한다.
-# - 각 브랜치는 input->present(...)로 있는지 확인한 뒤 input->select(...)로
-#   연결하며, 이 연결 과정이 실제 브랜치 접근의 시작점이 된다.
+#-----------------------------------------------------------------------------
+# 이 스크립트(mkanalyzer.py)의 목적
+# - variables.txt를 읽어 "브랜치 이름 / 타입 / 최대 개수(count) / leaf counter" 정보를 모은 뒤,
+#   그 정보로 eventBuffer C++ 코드를 자동 생성한다.
+# - 생성된 eventBuffer는 treestream(itreestream)의 select 기능을 이용해
+#   각 브랜치 주소를 C++ 변수(스칼라/벡터)에 연결한다.
 #
-# 브랜치 타입별 처리 요약:
-# - 스칼라(branch count == 1)는 선언 후 0으로 초기화하고, 존재할 때만 select 한다.
-# - array(변수 길이 배열)는 std::vector로 선언하고, leaf counter를 붙여 접근한다.
-# - vector branch는 std::vector 타입으로 선언하며, 입력 브랜치가 있을 때만 select 한다.
+# eventBuffer의 큰 흐름 (Read-only 생성자 기준)
+# 1) stream이 정상인지 확인한 뒤 initBuffers()를 호출한다.
+#    - 여기서 스칼라 변수는 기본값(0)으로 초기화된다.
+#    - 벡터 변수는 "선언만" 되어 있고, 기본적으로 empty 상태다.
+# 2) choose 맵에 "기본적으로 어떤 브랜치를 선택할지"를 채운다.
+#    - varlist를 주지 않으면 DEFAULT=True로 전체 선택 모드.
+# 3) 각 브랜치에 대해 input->present("branch")로 존재 여부를 확인한다.
+#    - 존재하면 input->select("branch", variable)로 연결한다.
+#    - 없으면 select를 하지 않고 넘어간다.
+# 4) 생성자 끝에서, 연결 성공/실패 브랜치 목록을 출력한다.
+#    - successBranches / missingBranches 리스트로 요약 보고서를 만든다.
 #
-# 브랜치가 없을 때의 잠재적 문제:
-# - select 되지 않은 브랜치를 사용하면 값이 비어 있거나 의미 없는 값이 될 수 있다.
-# - 스칼라는 0으로 채워지기 때문에 boolean 조건이나 컷 로직에서
-#   의도치 않은 판단을 유도할 수 있다.
-# - 특히 배열/벡터는 크기가 0일 수 있어 접근 시 로직이 깨질 위험이 있다.
-# - vector struct 채우기에서 data에 없는 gen 계열 브랜치가 0으로 들어가
-#   마치 값이 있는 것처럼 보일 수도 있다.
-# - 현재는 analyzer 단계에서 해당 branch 사용을 조심하는 수밖에 없고,
-#   이 부분은 이후 업데이트로 개선할 예정이다.
+# 브랜치 타입별 처리 요약
+# [1] 스칼라 (count == 1)
+# - 예: run, lumi, event, rho, Flag_*, HLT_* 등
+# - C++ 변수로 선언하고 initBuffers()에서 0으로 초기화한다.
+# - 브랜치가 있을 때만 select로 연결된다.
+# - 브랜치가 없으면 값은 "0인 채로 유지"된다.
 #
-# 참고: 이상적으로는 없는 branch에 접근 시 0이 아닌 에러를 내는 것이 맞지만,
-#       그러면 범용적으로 코드 작성이 어려워지는 문제가 있어, 이 점을 고민 중이다.
+# [2] 가변 길이 배열(대부분의 NanoAOD 오브젝트 필드)
+# - NanoAOD의 많은 필드는 leaf counter(nJet, nElectron 등)를 따르는 배열 형태이지만,
+#   eventBuffer에서는 일괄적으로 std::vector<T>로 받는다.
+# - 브랜치가 있을 때만 select로 연결된다.
+# - 브랜치가 없으면 그 벡터는 empty 상태로 남는다.
 #
-# 추후에는 branch 접속에 대해 실제 존재하지 않는 branch의 경우 아예 사용 불가하게
-# 만드는 방법을 강구하고 있으며 또한 debug 모드를 만들어서 eventbuffer에서 직접
-# branch를 읽었을 때 어떤 값이 (초기화 및 branch 접속에 의해) 불러들어와 지는지
-# 출력하는 문구를 만들겠다.
+# [3] vector<T> 브랜치
+# - variables.txt에서 타입이 vector<...>로 들어온 경우.
+# - 브랜치가 존재할 때만:
+#     (1) var.resize(MAXCOUNT)
+#     (2) input->select(branch, var)
+#     (3) var.clear()
+#   를 수행한다.
+#   이유:
+#   - select는 내부적으로 "버퍼 메모리 주소"가 필요해서 resize로 메모리를 확보하고,
+#   - clear로 논리적 크기를 다시 0으로 만들어 event 읽기 전 상태를 정리하려는 의도다.
+#   - (주의) clear는 capacity를 유지하므로 메모리는 잡혀 있을 수 있다.
+# - 브랜치가 없으면 resize/select/clear를 하지 않으므로 벡터는 그대로 empty 상태다.
+#
+# 오브젝트 struct 채우기(fillElectrons(), fillJets() 등)에서의 안전 처리
+# - Data/MC 차이로 어떤 필드(예: Electron_genPartIdx)가 Data에는 없을 수 있다.
+# - 이런 경우 해당 필드 벡터가 empty가 되므로 var[i] 접근은 크래시 위험이 있다.
+# - 그래서 struct fill에서는
+#     (var.size() > i) ? var[i] : 0
+#   형태로 "부분적으로 없는 필드"를 0으로 채우도록 방어 로직을 넣었다.
+#
+# 브랜치가 없을 때 의미/주의점 (중요)
+# - 현재 정책은 "없는 브랜치를 에러로 즉시 죽이기"가 아니라,
+#   가능한 한 분석이 돌아가도록 missing을 0/empty로 처리한다.
+# - 이 방식은 런타임 크래시는 줄이지만, 아래와 같은 위험이 있다:
+#   1) 스칼라(HLT/Flag/Weight)가 없으면 0이 되어,
+#      "실제로는 브랜치가 없었다"는 사실이 분석 로직에서 숨겨질 수 있다.
+#      (즉, missing과 false(0)를 구분 못함)
+#   2) 벡터/배열은 empty일 수 있으므로 analyzer에서 [i] 접근을 하면 터질 수 있다.
+#      (현재는 struct fill에서는 방어하지만, analyzer에서 직접 벡터를 접근하면 위험)
+#
+# 향후 개선 계획 (간단 버전)
+# - 목표는 "없는 브랜치를 조용히 0으로 쓰는 실수"를 줄이는 것.
+# - 다음 중 하나(또는 혼합)를 고려한다:
+#   A) fail-fast 모드:
+#      - 분석에 필수인 브랜치 목록을 지정하고, 없으면 시작 단계에서 즉시 종료.
+#   B) 안전 접근 인터페이스:
+#      - analyzer 코드에서 _ev->HLT_* 같은 직접 접근을 줄이고,
+#        TriggerMenu/Weights 같은 레이어를 통해서만 읽게 만든다.
+#   C) 디버그/검증 출력 강화:
+#      - 지금은 "present 여부"를 요약 출력하지만,
+#        필요 시 특정 브랜치/오브젝트의 읽힌 값/크기까지 출력하는 모드를 확장한다.
+#-----------------------------------------------------------------------------
+
 #
 # Created: 06-Mar-2010 Harrison B. Prosper
 # Updated: 12-Mar-2010 HBP - fix appending of .root
