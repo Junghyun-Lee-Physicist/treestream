@@ -4,12 +4,23 @@
 #              variables.txt file. (See mkvariables.py).
 #
 # 쉬운 설명:
-# - mkanalyzer.py는 variables.txt를 읽어 변수/브랜치 정보를 수집하고,
-#   eventBuffer가 쓸 C++ 코드(헤더/소스)를 템플릿으로 생성한다.
-# - eventBuffer 생성자는 입력 스트림 상태를 확인한 뒤 initBuffers()로
-#   변수 기본값을 초기화하고, 선택된 브랜치를 choose 맵에 표시한다.
-# - 이후 각 브랜치에 대해 input->present(...)를 통해 존재 여부를 확인한 뒤
-#   input->select(...)로 연결하며, 이 로직이 실제 브랜치 접근의 출발점이 된다.
+# - mkanalyzer.py는 variables.txt를 읽어 변수/브랜치 정보를 모으고,
+#   eventBuffer가 쓸 C++ 코드(헤더/소스)를 템플릿으로 만든다.
+# - eventBuffer 생성자는 스트림이 읽을 수 있는지 확인한 다음
+#   initBuffers()로 변수 기본값을 초기화하고, choose 맵에 선택 여부를 표시한다.
+# - 각 브랜치는 input->present(...)로 있는지 확인한 뒤 input->select(...)로
+#   연결하며, 이 연결 과정이 실제 브랜치 접근의 시작점이 된다.
+#
+# 브랜치 타입별 처리 요약:
+# - 스칼라(branch count == 1)는 선언 후 0으로 초기화하고, 존재할 때만 select 한다.
+# - array(변수 길이 배열)는 std::vector로 선언하고, leaf counter를 붙여 접근한다.
+# - vector branch는 std::vector 타입으로 선언하며, 입력 브랜치가 있을 때만 select 한다.
+#
+# 브랜치가 없을 때의 잠재적 문제:
+# - select 되지 않은 브랜치를 사용하면 값이 비어 있거나 의미 없는 값이 될 수 있다.
+# - 특히 배열/벡터는 크기가 0일 수 있어 접근 시 로직이 깨질 위험이 있다.
+# - 현재는 analyzer 단계에서 해당 branch 사용을 조심하는 수밖에 없고,
+#   이 부분은 이후 업데이트로 개선할 예정이다.
 #
 # 추후에는 branch 접속에 대해 실제 존재하지 않는 branch의 경우 아예 사용 불가하게
 # 만드는 방법을 강구하고 있으며 또한 debug 모드를 만들어서 eventbuffer에서 직접
