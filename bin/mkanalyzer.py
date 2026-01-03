@@ -3,6 +3,19 @@
 # Description: Create ntuple analyzer using information supplied in a
 #              variables.txt file. (See mkvariables.py).
 #
+# 쉬운 설명:
+# - mkanalyzer.py는 variables.txt를 읽어 변수/브랜치 정보를 수집하고,
+#   eventBuffer가 쓸 C++ 코드(헤더/소스)를 템플릿으로 생성한다.
+# - eventBuffer 생성자는 입력 스트림 상태를 확인한 뒤 initBuffers()로
+#   변수 기본값을 초기화하고, 선택된 브랜치를 choose 맵에 표시한다.
+# - 이후 각 브랜치에 대해 input->present(...)를 통해 존재 여부를 확인한 뒤
+#   input->select(...)로 연결하며, 이 로직이 실제 브랜치 접근의 출발점이 된다.
+#
+# 추후에는 branch 접속에 대해 실제 존재하지 않는 branch의 경우 아예 사용 불가하게
+# 만드는 방법을 강구하고 있으며 또한 debug 모드를 만들어서 eventbuffer에서 직접
+# branch를 읽었을 때 어떤 값이 (초기화 및 branch 접속에 의해) 불러들어와 지는지
+# 출력하는 문구를 만들겠다.
+#
 # Created: 06-Mar-2010 Harrison B. Prosper
 # Updated: 12-Mar-2010 HBP - fix appending of .root
 #          08-Jun-2010 HBP - add creation of selector.h
@@ -269,7 +282,24 @@ struct eventBuffer
               }
           }
       }
+    std::vector<std::string> successBranches;
+    std::vector<std::string> missingBranches;
 %(setb)s
+
+    std::cout << "=========================================" << std::endl;
+    std::cout << "Report for [ eventbuffer ] about branch access.." << std::endl;
+    std::cout << std::endl;
+    std::cout << "sucess branch list -----" << std::endl;
+    for (size_t i = 0; i < successBranches.size(); ++i)
+      {
+        std::cout << successBranches[i] << std::endl;
+      }
+    std::cout << std::endl;
+    std::cout << "failed branch list -----" << std::endl;
+    for (size_t i = 0; i < missingBranches.size(); ++i)
+      {
+        std::cout << missingBranches[i] << std::endl;
+      }
   }
 
   // A write-only buffer
@@ -1070,16 +1100,21 @@ def main():
 # [MODIFIED] Above line changed by Jh.Lee 18th Dec, 2025
         if count == 1:
             # Scalar: Just check existence
-            cmd = '    if (input->present("%s")) input->select("%s", %s);' % \
-                  (branchname, branchname, varname)
+            cmd = '    if (input->present("%s")) { input->select("%s", %s); ' \
+                  'successBranches.push_back("%s"); } else { ' \
+                  'missingBranches.push_back("%s"); }' % \
+                  (branchname, branchname, varname, branchname, branchname)
             setb.append(cmd)
         else:
             # Vector: Resize -> Select -> Clear pattern
             cmd = '    if (input->present("%s")) { ' \
                   '%s.resize(%d); ' \
                   'input->select("%s", %s); ' \
-                  '%s.clear(); }' % \
-                  (branchname, varname, count, branchname, varname, varname)
+                  '%s.clear(); ' \
+                  'successBranches.push_back("%s"); } else { ' \
+                  'missingBranches.push_back("%s"); }' % \
+                  (branchname, varname, count, branchname, varname, varname,
+                   branchname, branchname)
             setb.append(cmd)
 
 
@@ -1415,4 +1450,3 @@ echo "TNM_PATH=${TNM_PATH}"
     print("\tto build shared library libtnm.so\n")
 #------------------------------------------------------------------------------
 main()
-
