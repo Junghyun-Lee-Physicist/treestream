@@ -1,7 +1,84 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #-----------------------------------------------------------------------------
 # Description: Create ntuple analyzer using information supplied in a
 #              variables.txt file. (See mkvariables.py).
+#
+# Created: 06-Mar-2010 Harrison B. Prosper
+#-----------------------------------------------------------------------------
+# 이 스크립트(mkanalyzer.py)의 목적
+# - variables.txt를 읽어 "브랜치 이름 / 타입 / 최대 개수(count) / leaf counter" 정보를 모은 뒤,
+#   그 정보로 eventBuffer C++ 코드를 자동 생성한다.
+# - 생성된 eventBuffer는 treestream(itreestream)의 select 기능을 이용해
+#   각 브랜치 주소를 C++ 변수(스칼라/벡터)에 연결한다.
+#
+# eventBuffer의 큰 흐름 (Read-only 생성자 기준)
+# 1) stream이 정상인지 확인한 뒤 initBuffers()를 호출한다.
+#    - 여기서 스칼라 변수는 기본값(0)으로 초기화된다.
+#    - 벡터 변수는 "선언만" 되어 있고, 기본적으로 empty 상태다.
+# 2) choose 맵에 "기본적으로 어떤 브랜치를 선택할지"를 채운다.
+#    - varlist를 주지 않으면 DEFAULT=True로 전체 선택 모드.
+# 3) 각 브랜치에 대해 input->present("branch")로 존재 여부를 확인한다.
+#    - 존재하면 input->select("branch", variable)로 연결한다.
+#    - 없으면 select를 하지 않고 넘어간다.
+# 4) 생성자 끝에서, 연결 성공/실패 브랜치 목록을 출력한다.
+#    - successBranches / missingBranches 리스트로 요약 보고서를 만든다.
+#
+# 브랜치 타입별 처리 요약
+# [1] 스칼라 (count == 1)
+# - 예: run, lumi, event, rho, Flag_*, HLT_* 등
+# - C++ 변수로 선언하고 initBuffers()에서 0으로 초기화한다.
+# - 브랜치가 있을 때만 select로 연결된다.
+# - 브랜치가 없으면 값은 "0인 채로 유지"된다.
+#
+# [2] 가변 길이 배열(대부분의 NanoAOD 오브젝트 필드)
+# - NanoAOD의 많은 필드는 leaf counter(nJet, nElectron 등)를 따르는 배열 형태이지만,
+#   eventBuffer에서는 일괄적으로 std::vector<T>로 받는다.
+# - 브랜치가 있을 때만 select로 연결된다.
+# - 브랜치가 없으면 그 벡터는 empty 상태로 남는다.
+#
+# [3] vector<T> 브랜치
+# - variables.txt에서 타입이 vector<...>로 들어온 경우.
+# - 브랜치가 존재할 때만:
+#     (1) var.resize(MAXCOUNT)
+#     (2) input->select(branch, var)
+#     (3) var.clear()
+#   를 수행한다.
+#   이유:
+#   - select는 내부적으로 "버퍼 메모리 주소"가 필요해서 resize로 메모리를 확보하고,
+#   - clear로 논리적 크기를 다시 0으로 만들어 event 읽기 전 상태를 정리하려는 의도다.
+#   - (주의) clear는 capacity를 유지하므로 메모리는 잡혀 있을 수 있다.
+# - 브랜치가 없으면 resize/select/clear를 하지 않으므로 벡터는 그대로 empty 상태다.
+#
+# 오브젝트 struct 채우기(fillElectrons(), fillJets() 등)에서의 안전 처리
+# - Data/MC 차이로 어떤 필드(예: Electron_genPartIdx)가 Data에는 없을 수 있다.
+# - 이런 경우 해당 필드 벡터가 empty가 되므로 var[i] 접근은 크래시 위험이 있다.
+# - 그래서 struct fill에서는
+#     (var.size() > i) ? var[i] : 0
+#   형태로 "부분적으로 없는 필드"를 0으로 채우도록 방어 로직을 넣었다.
+#
+# 브랜치가 없을 때 의미/주의점 (중요)
+# - 현재 정책은 "없는 브랜치를 에러로 즉시 죽이기"가 아니라,
+#   가능한 한 분석이 돌아가도록 missing을 0/empty로 처리한다.
+# - 이 방식은 런타임 크래시는 줄이지만, 아래와 같은 위험이 있다:
+#   1) 스칼라(HLT/Flag/Weight)가 없으면 0이 되어,
+#      "실제로는 브랜치가 없었다"는 사실이 분석 로직에서 숨겨질 수 있다.
+#      (즉, missing과 false(0)를 구분 못함)
+#   2) 벡터/배열은 empty일 수 있으므로 analyzer에서 [i] 접근을 하면 터질 수 있다.
+#      (현재는 struct fill에서는 방어하지만, analyzer에서 직접 벡터를 접근하면 위험)
+#
+# 향후 개선 계획 (간단 버전)
+# - 목표는 "없는 브랜치를 조용히 0으로 쓰는 실수"를 줄이는 것.
+# - 다음 중 하나(또는 혼합)를 고려한다:
+#   A) fail-fast 모드:
+#      - 분석에 필수인 브랜치 목록을 지정하고, 없으면 시작 단계에서 즉시 종료.
+#   B) 안전 접근 인터페이스:
+#      - analyzer 코드에서 _ev->HLT_* 같은 직접 접근을 줄이고,
+#        TriggerMenu/Weights 같은 레이어를 통해서만 읽게 만든다.
+#   C) 디버그/검증 출력 강화:
+#      - 지금은 "present 여부"를 요약 출력하지만,
+#        필요 시 특정 브랜치/오브젝트의 읽힌 값/크기까지 출력하는 모드를 확장한다.
+#-----------------------------------------------------------------------------
+
 #
 # Created: 06-Mar-2010 Harrison B. Prosper
 # Updated: 12-Mar-2010 HBP - fix appending of .root
@@ -27,6 +104,15 @@
 #                          - protect against zero maxcount
 #          23-Mar-2019 HBP - Add user supplied cppflags to CPPFLAGS
 #          12-Oct-2020 HBP - Adapt to ROOT6 version of TNM
+#-----------------------------------------------------------------------------
+#  Updated:     Junghyun Lee  <junghyun.lee@cern.ch>
+#               18-Dec-2025 JhLee - present() guard for Super-Set strategy
+#                                 - Remove vector zero-initialization (ghost object fix)
+#                                 - Safe struct fill with size check
+#                                 - Handle '/' in branch names
+#                                 - Branch access report (success/missing)
+#               15-Mar-2026 JhLee - Improve branch access report formatting
+#                                 - Disable CMSSW_BASE path (standalone build)
 #-----------------------------------------------------------------------------
 import os, sys, re, posixpath
 from time import sleep, ctime
@@ -67,16 +153,17 @@ getvtype = re.compile('(?<=vector[<]).+(?=[>])')
 #-----------------------------------------------------------------------------
 AUTHOR = getauthor()
 
-if "CMSSW_BASE" in os.environ:
-    CMSSW_BASE     = os.environ["CMSSW_BASE"]
-    PACKAGE        = "%s/src/PhysicsTools/TheNtupleMaker" % CMSSW_BASE
-    TREESTREAM_HPP = "%s/interface/treestream.h" % PACKAGE    
-    TREESTREAM_CPP = "%s/src/treestream.cc"  % PACKAGE
-    
-    TNM_HPP = "%s/tnm/tnm.h"  % PACKAGE
-    TNM_CPP = "%s/tnm/tnm.cc" % PACKAGE
-    TNM_PY  = "%s/tnm/tnm.py" % PACKAGE
-elif 'TREESTREAM_PATH' in os.environ:
+##if "CMSSW_BASE" in os.environ:
+##    CMSSW_BASE     = os.environ["CMSSW_BASE"]
+##    PACKAGE        = "%s/src/PhysicsTools/TheNtupleMaker" % CMSSW_BASE
+##    TREESTREAM_HPP = "%s/interface/treestream.h" % PACKAGE    
+##    TREESTREAM_CPP = "%s/src/treestream.cc"  % PACKAGE
+##    
+##    TNM_HPP = "%s/tnm/tnm.h"  % PACKAGE
+##    TNM_CPP = "%s/tnm/tnm.cc" % PACKAGE
+##    TNM_PY  = "%s/tnm/tnm.py" % PACKAGE
+##elif 'TREESTREAM_PATH' in os.environ:
+if 'TREESTREAM_PATH' in os.environ:
     area  = {'local': '%s' % os.environ['TREESTREAM_PATH']}
     TREESTREAM_HPP = "%(local)s/include/treestream.h" % area
     TREESTREAM_CPP = "%(local)s/src/treestream.cc" % area
@@ -268,7 +355,39 @@ struct eventBuffer
               }
           }
       }
+    std::vector<std::string> successBranches;
+    std::vector<std::string> missingBranches;
 %(setb)s
+
+    // --- Branch Access Report ---
+    std::cout << std::endl;
+    std::cout << "==========================================" << std::endl;
+    std::cout << "  eventBuffer Branch Access Report" << std::endl;
+    std::cout << "==========================================" << std::endl;
+    std::cout << "  [OK]      " << successBranches.size()
+              << " branches connected" << std::endl;
+    std::cout << "  [MISSING] " << missingBranches.size()
+              << " branches not found in file" << std::endl;
+    if ( missingBranches.size() > 0 )
+      {
+        std::cout << std::endl;
+        std::cout << "  Missing branches (skipped, filled with 0/empty):"
+                  << std::endl;
+        for (size_t i = 0; i < missingBranches.size(); ++i)
+          {
+            std::cout << "    - " << missingBranches[i] << std::endl;
+          }
+        std::cout << std::endl;
+        std::cout << "  NOTE: Missing branches are expected when using a"
+                  << std::endl;
+        std::cout << "  Super-Set variables.txt across Data/MC or different"
+                  << std::endl;
+        std::cout << "  data-taking periods. Scalars default to 0,"
+                  << std::endl;
+        std::cout << "  vectors remain empty (size=0)." << std::endl;
+      }
+    std::cout << "==========================================" << std::endl;
+    std::cout << std::endl;
   }
 
   // A write-only buffer
@@ -426,7 +545,7 @@ int main(int argc, char** argv)
 
 
 PYTEMPLATE =\
-'''#!/usr/bin/env python
+'''#!/usr/bin/env python3
 # ----------------------------------------------------------------------------
 #  File:        %(name)s.py
 #  Description: Analyzer for simple ROOT ntuples
@@ -813,6 +932,7 @@ def main():
     for index in range(len(records)):
         record = records[index]
         if record == "": continue
+        if record.startswith("#"): continue
 
         # split record into its fields
         # varname = variable name as determined by mkvariables.py
@@ -843,19 +963,49 @@ def main():
     skipped = '' # variables that are skipped
     for index, tns in enumerate(tokens):
 
-        # check for leafcounter
-        has_leafcounter = len(tns) == 5
-        if has_leafcounter:
-            rtype, branchname, varname, count, countername = tns
-        elif len(tns) == 4:
-            rtype, branchname, varname, count = tns
-            countername = None
-        else:
-            sys.exit('''
+####        # check for leafcounter
+####        has_leafcounter = len(tns) == 5
+####        if has_leafcounter:
+####            rtype, branchname, varname, count, countername = tns
+####        elif len(tns) == 4:
+####            rtype, branchname, varname, count = tns
+####            countername = None
+####        else:
+####            sys.exit('''
+#### ** mkanalyzer.py ***
+####            missing maximum count at end of record:
+####            %s
+####            ''' % tns)
+        # --------------------------------------------------------------------
+        # [Fixed by Jh.Lee] Handle Branch names containing '/' (e.g., Events/BranchName)
+        # --------------------------------------------------------------------
+        try:
+            # 1. Type is always the first token
+            rtype = tns[0]
+
+            # 2. Count info is always the last token
+            last_token = tns[-1]
+            if ' ' in last_token:
+                count_str, countername = last_token.split()
+            else:
+                count_str = last_token
+                countername = None
+            
+            count = count_str 
+
+            # 3. Variable name is always the second to last token
+            varname = tns[-2]
+
+            # 4. Branch name is everything in between (Handle 'Events/Name')
+            branchname = "/".join(tns[1:-2])
+
+        except Exception as e:
+             sys.exit('''
  ** mkanalyzer.py ***
-            missing maximum count at end of record:
-            %s
-            ''' % tns)
+            Parsing error for record: %s
+            Error: %s
+            ''' % (tns, e))
+
 
         # for now strings aren't supported
         if rtype.find("string") > -1: 
@@ -970,7 +1120,10 @@ def main():
         rtype, branchname, count, countername = varmap[varname]
         if countername == None: continue
         counters.add(countername)
-    for name in counters:
+    # sort for deterministic output: iterating a set of strings is
+    # PYTHONHASHSEED-dependent, which made eventBuffer.h differ run-to-run
+    # (see docs/troubleshooting.md A10). Sorting fixes the order.
+    for name in sorted(counters):
         declare.append("  %s\t%s;" % ('int', name))
         addb.append('  output->add("%s", \t%s);' % (name, name))
     declare.append('')
@@ -1020,16 +1173,59 @@ def main():
             choosename = branchname
         choose.append('  choose["%s"]\t= DEFAULT;' % choosename)
         setb.append('  if ( choose["%s"] )'   % choosename)
-        cmd = '    input->select("%s", \t%s);' % (branchname, varname)
-        if len(cmd) < 75:
+####        cmd = '    input->select("%s", \t%s);' % (branchname, varname)
+####        if len(cmd) < 75:
+####            setb.append(cmd)
+####        else:
+####            setb.append('    input->select("%s",' % branchname)
+####            setb.append('                   %s);' % varname)
+# above 4 lines are changed by Jh.Lee 18th Dec, 2025
+# [MODIFIED] Check existence before selecting (Super-Set Strategy)
+       
+####        # Branch가 파일에 존재할 때만 select를 호출하도록 보호
+####        cmd = '    if (input->present("%s")) input->select("%s", %s);' % \
+####              (branchname, branchname, varname)
+####
+####        # 긴 줄 처리 등은 무시하고, 위 한 줄로 깔끔하게 처리하거나
+####        # 필요하다면 줄바꿈 처리를 추가할 수 있습니다. 위 코드로 충분합니다.
+####        setb.append(cmd)
+# [MODIFIED] Above line changed by Jh.Lee 18th Dec, 2025
+        if count == 1:
+            # Scalar: Just check existence
+            cmd = '    if (input->present("%s")) { input->select("%s", %s); ' \
+                  'successBranches.push_back("%s"); } else { ' \
+                  'missingBranches.push_back("%s"); }' % \
+                  (branchname, branchname, varname, branchname, branchname)
             setb.append(cmd)
         else:
-            setb.append('    input->select("%s",' % branchname)
-            setb.append('                   %s);' % varname)
+            # Vector: Resize -> Select -> Clear pattern
+            cmd = '    if (input->present("%s")) { ' \
+                  '%s.resize(%d); ' \
+                  'input->select("%s", %s); ' \
+                  '%s.clear(); ' \
+                  'successBranches.push_back("%s"); } else { ' \
+                  'missingBranches.push_back("%s"); }' % \
+                  (branchname, varname, count, branchname, varname, varname,
+                   branchname, branchname)
+            setb.append(cmd)
 
+
+
+        # [SCALAR] count == 1
         if count == 1:
+            # 스칼라 변수 분기, trigger나 event, run 등등의 변수가 여기 저장
+            # nJet, nElectron 같은 다른 변수의 개수를 뜻하는 변수들(e.g. Jet_pt ...[nJet])
+            # 의 경우 mkvariables에서 아예 카운트를 안함
+            #    --> is_counter = (x[-1] == "*")
+            #    --> if is_counter:
+            #    -->    continue;
+            # 위 구현이 mkvariabe에 있으니 확인
             declare.append("  %s\t%s;" % (rtype, varname))
 
+            # [추가됨] 스칼라 변수는 0으로 초기화 (Branch가 없을 때 쓰레기 값 방지)
+            init.append("    %s\t= 0;" % varname)
+
+        # [VECTOR] count > 1 (else block)
         else:
             # this is either a vector or a variable length array
             if str.find(rtype, 'vector') > -1:
@@ -1043,13 +1239,18 @@ def main():
                 vtype = vtype[0]
                 
                 declarevec.append("  %s\t%s;" % (rtype, varname))
-                init.append("    %s\t= %s(%d, (%s)0);" % \
-                        (varname, rtype, count, vtype))
+####                init.append("    %s\t= %s(%d, (%s)0);" % \
+####                        (varname, rtype, count, vtype))
+                    # Above 2 line are commented out by Jh.Lee to prevent vector initialization
+		    
             else:
                 # VARIABLE LENGTH ARRAY
+                # Central NanoAOD sample은전부 array 선언이라 위 vector 분기는 의미 없긴 함
                 declarevec.append("  std::vector<%s>\t%s;" % (rtype, varname))
-                init.append("    %s\t= std::vector<%s>(%d,0);" % \
-                            (varname, rtype, count))
+####                init.append("    %s\t= std::vector<%s>(%d,0);" % \
+####                            (varname, rtype, count))
+                    # Above 2 line are commented out by Jh.Lee to prevent vector initialization
+
                 if countername == None:
                     sys.exit("** error ** array %s does not have a "\
                                  "leafcounter name" % varname)
@@ -1129,10 +1330,24 @@ def main():
                 
             structdecl.append('    %s\t%s;' % (rtype, fldname))
 
-            structimpl.append('        %s[i].%s\t= %s%s[i];' % (objname,
+####            structimpl.append('        %s[i].%s\t= %s%s[i];' % (objname,
+####                                                              fldname,
+####                                                              cast,
+####                                                              varname))
+# Above 4 linesa are modified by Jh.Lee 18th Dec, 2025
+# To avoid empty vector, so why this happen?
+# MC has object vector like electrons, muons, jet, etc
+# MC's electron could have [ genPartIdx branch, pt branch, ... ]
+# BUT DATA ELECTRON COULD HAVE [ pt branch, NOT genPartIdx, ... ], so if you use above line,
+# then you could approch genPartIdx in Data sample even though they don't have genPartIdx branch
+            # [Fix] Partial Branch Existence in Structs (Safe Access)
+            # MC 변수(genPartIdx 등)가 Data에서 비어있을 때(Size=0) 접근하여 죽는 것 방지
+            structimpl.append('        %s[i].%s\t= (%s.size() > i) ? %s%s[i] : 0;' % (objname,
                                                               fldname,
+                                                              varname,
                                                               cast,
                                                               varname))
+
 
             selectimpl.append('            %s[i]\t= %s[j];' % (varname, varname))
 
@@ -1327,4 +1542,3 @@ echo "TNM_PATH=${TNM_PATH}"
     print("\tto build shared library libtnm.so\n")
 #------------------------------------------------------------------------------
 main()
-

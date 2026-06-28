@@ -58,7 +58,11 @@
 //          20-Jan-2019 HBP avoid ROOT warning when handling stored vector types.
 //          23-Jun-2019 HBP allow reading of simple STL vector types from file.
 //          18-Jan-2020 HBP in ROOT 6.16/00 it seems one must store leaf counter
-//                          explicitly. 
+//                          explicitly.
+//----------------------------------------------------------------------------
+//  Updated: Junghyun Lee <junghyun.lee@cern.ch>
+//           18-Dec-2025 JhLee - Change warning to fatal for missing branches
+//                               to prevent Ghost Object creation
 //----------------------------------------------------------------------------
 #ifdef PROJECT_NAME
 #include <boost/regex.hpp>
@@ -1906,8 +1910,11 @@ itreestream::_select(string namen, void* address, int maxsize, char srctype,
     }
   else
     {
-      warning("itreestream - branch " + namen + " not found");
-      _statuscode = kBADBRANCH;
+////      warning("itreestream - branch " + namen + " not found");
+////      _statuscode = kBADBRANCH;
+      // Jh.Lee modified above 2 line, 
+      // If treestream could not find specific branch, then it will occur "fetal error"
+      fatal("itreestream - CRITICAL ERROR: Branch '" + namen + "' not found! Aborting.");
     }
 }  
 
