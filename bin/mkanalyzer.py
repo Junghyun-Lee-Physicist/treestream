@@ -113,6 +113,16 @@
 #                                 - Branch access report (success/missing)
 #               15-Mar-2026 JhLee - Improve branch access report formatting
 #                                 - Disable CMSSW_BASE path (standalone build)
+#               03-Oct-2026       - v15 review (docs/troubleshooting.md A11-A17):
+#                                   object vectors (Jet, ...) start empty and are
+#                                   sized from the longest bound field, not the
+#                                   first one; leaf counters (nJet, ...) are 0 and
+#                                   read when an array that uses them is read;
+#                                   read() stops when an entry cannot be loaded;
+#                                   successBranches/missingBranches are members;
+#                                   varlist matches full and short names; choose
+#                                   keys are always the full 'Tree/branch' name;
+#                                   the skeleton's tree comes from the records
 #-----------------------------------------------------------------------------
 import os, sys, re, posixpath
 from time import sleep, ctime
@@ -285,6 +295,7 @@ TEMPLATE_H =\
 #include <cmath>
 #include <map>
 #include <cassert>
+#include <set>
 #include "treestream.h"
 
 struct eventBuffer
@@ -316,7 +327,7 @@ struct eventBuffer
       {
         std::cout << "eventBuffer - please check stream!" 
                   << std::endl;
-	    exit(0);
+	    exit(1);
       }
 
     initBuffers();
@@ -341,22 +352,25 @@ struct eventBuffer
             sin >> key;
             if ( sin )
               {
-		        std::map<std::string, bool>::iterator it;
-		        for(it = choose.begin(); it != choose.end(); it++)
-		          {
-		            if ( it->first.length() > key.length() )
-		              {
-			            if ( it->first.substr(0, key.size()) == key )
-			              {
-			                choose[it->first] = true;
-			              }
-		              }
+                std::map<std::string, bool>::iterator it;
+                for(it = choose.begin(); it != choose.end(); it++)
+                  {
+                    // a key selects a branch if it is the start of (or equal to)
+                    // the full name 'Events/Jet_pt' or the short name 'Jet_pt'
+                    const std::string& full = it->first;
+                    std::string::size_type slash = full.rfind('/');
+                    std::string shortname = (slash == std::string::npos)
+                                            ? full : full.substr(slash + 1);
+                    if ( full.compare(0, key.size(), key) == 0 ||
+                         shortname.compare(0, key.size(), key) == 0 )
+                      it->second = true;
                   }
               }
           }
       }
-    std::vector<std::string> successBranches;
-    std::vector<std::string> missingBranches;
+    successBranches.clear();
+    missingBranches.clear();
+    std::set<std::string> usedCounters;   // leaf counters of the arrays bound below
 %(setb)s
 
     // --- Branch Access Report ---
@@ -413,7 +427,14 @@ struct eventBuffer
                   << std::endl;
         assert(0);
       }
-    input->read(entry);
+    // a negative value: the entry could not be loaded (e.g. a file of the
+    // chain cannot be opened); the buffers would keep the previous values
+    if ( input->read(entry) < 0 )
+      {
+        std::cout << "** eventBuffer::read - cannot load entry " << entry
+                  << "; stopping" << std::endl;
+        exit(1);
+      }
 
     // clear indexmap
     for(std::map<std::string, std::vector<int> >::iterator
@@ -473,6 +494,11 @@ struct eventBuffer
 
  // switches for choosing branches
  std::map<std::string, bool> choose;
+
+ // filled by the read-only constructor: branches bound / absent in the
+ // FIRST file of the stream (presence is decided once, from that file)
+ std::vector<std::string> successBranches;
+ std::vector<std::string> missingBranches;
 
 }; 
 #endif
@@ -902,7 +928,7 @@ def main():
 
     # Get tree name(s)
     t = str.split(records[0])
-    if str.lower(t[0]) == "tree:":
+    if str.lower(t[0]) in ("tree:", "tree"):
         treename = t[1]
     else:
         treename = ""
@@ -915,8 +941,6 @@ def main():
             treename += " %s" % t[1]
             start += 1
 
-    # check whether we have a single tree
-    single_tree = len(str.split(treename)) == 1
     
     # --------------------------------------------------------------------
     # Done with header, so loop over branch names
@@ -1116,16 +1140,23 @@ def main():
     
     # get all leaf counters
     counters = set()
+    counterbranch = {}   # counter -> full branch name ('Events/nJet')
     for index, varname in enumerate(keys):
         rtype, branchname, count, countername = varmap[varname]
         if countername == None: continue
         counters.add(countername)
+        if countername not in counterbranch:
+            head = branchname.rsplit('/', 1)[0] if '/' in branchname else ''
+            counterbranch[countername] = (head + '/' if head else '') + countername
     # sort for deterministic output: iterating a set of strings is
     # PYTHONHASHSEED-dependent, which made eventBuffer.h differ run-to-run
     # (see docs/troubleshooting.md A10). Sorting fixes the order.
     for name in sorted(counters):
         declare.append("  %s\t%s;" % ('int', name))
         addb.append('  output->add("%s", \t%s);' % (name, name))
+        # a counter is not a record in variables.txt: it was never initialized
+        # nor read (garbage in read mode)
+        init.append("    %s\t= 0;" % name)
     declare.append('')
     addb.append('')
 
@@ -1167,12 +1198,12 @@ def main():
                 impl.append('    %s.clear();' % varname)
                 impl.append('')
 
-        if single_tree:
-            choosename = str.split(branchname, '/')[-1]
-        else:
-            choosename = branchname
+        # always the full branch name ('Events/Jet_pt'), as in every buffer made
+        # from NanoAOD files so far (their headers list 3 or more trees);
+        # analyzers look keys up by that name
+        choosename = branchname
         choose.append('  choose["%s"]\t= DEFAULT;' % choosename)
-        setb.append('  if ( choose["%s"] )'   % choosename)
+        setb.append('  if ( choose["%s"] ) {'   % choosename)
 ####        cmd = '    input->select("%s", \t%s);' % (branchname, varname)
 ####        if len(cmd) < 75:
 ####            setb.append(cmd)
@@ -1197,17 +1228,21 @@ def main():
                   'missingBranches.push_back("%s"); }' % \
                   (branchname, branchname, varname, branchname, branchname)
             setb.append(cmd)
+            setb.append('  }')
         else:
             # Vector: Resize -> Select -> Clear pattern
+            usecounter = ('usedCounters.insert("%s"); ' % countername) \
+                         if countername else ''
             cmd = '    if (input->present("%s")) { ' \
                   '%s.resize(%d); ' \
                   'input->select("%s", %s); ' \
                   '%s.clear(); ' \
-                  'successBranches.push_back("%s"); } else { ' \
+                  'successBranches.push_back("%s"); %s} else { ' \
                   'missingBranches.push_back("%s"); }' % \
                   (branchname, varname, count, branchname, varname, varname,
-                   branchname, branchname)
+                   branchname, usecounter, branchname)
             setb.append(cmd)
+            setb.append('  }')
 
 
 
@@ -1263,6 +1298,14 @@ def main():
             addb.append('  output->add("%s",' % branchname)
             addb.append('               %s);' % varname)
 
+    # Leaf counters: read only when an array that uses them is read (a varlist
+    # then still limits what is read); bound after the arrays, whose select()
+    # already created the counter field
+    for name in sorted(counters):
+        setb.append('  if ( usedCounters.count("%s") && input->present("%s") )'
+                    ' input->select("%s", %s);' %
+                    (name, counterbranch[name], counterbranch[name], name))
+
     # Create structs for vector variables
 
     pragma = []
@@ -1292,7 +1335,15 @@ def main():
         structimplall.append('    fill%ss();' % objname)
         structimpl.append('  void fill%ss()' % objname)
         structimpl.append('  {')
-        structimpl.append('    %s.resize(%s.size());' % (objname, varname))
+        # size = longest field vector of this object. For a NanoAOD object every
+        # bound field has the counter's length and absent ones are empty; sizing
+        # from the first field alone gave ZERO objects whenever that one field
+        # was absent. (A struct that mixes two collections, e.g. Proton_multiRP_*
+        # and Proton_singleRP_*, gets the longer one; shorter fields are 0.)
+        structimpl.append('    size_t nobj_ = 0;')
+        for _v in values:
+            structimpl.append('    if ( %s.size() > nobj_ ) nobj_ = %s.size();' % (_v[2], _v[2]))
+        structimpl.append('    %s.resize(nobj_);' % objname)
         structimpl.append('    for(unsigned int i=0; i < %s.size(); ++i)' % \
                           objname)
         structimpl.append('      {')
@@ -1353,9 +1404,7 @@ def main():
 
         structvec.append('  std::vector<eventBuffer::%s_s> %s;' % \
                              (objname, objname))
-        init.append('    %s\t= std::vector<eventBuffer::%s_s>(%d);' % (objname,
-                                                                       objname,
-                                                                       count))
+        init.append('    %s.clear();\t%s.reserve(%d);' % (objname, objname, count))
         pragma.append('#pragma link C++ class eventBuffer::%s_s;' % objname)
         pragma.append('#pragma link C++ class vector<eventBuffer::%s_s>;' % \
                           objname)
@@ -1385,6 +1434,17 @@ def main():
             selectimpl.append('    %s = n;' % countername)
     structimplall.append('  }')  # end of fillObjects()
     selectimpl.append('  }')  # end of saveObjects()
+
+    # The skeleton's tree: the one most records belong to ('Events/...'), then
+    # the other trees the records use. Header 'Tree' lines alone can list every
+    # tree of the file (old mkvariables.py) in file order.
+    prefixes = {}
+    for _v in varmap.values():
+        if '/' in _v[1]:
+            _p = _v[1].split('/')[0]
+            prefixes[_p] = prefixes.get(_p, 0) + 1
+    if prefixes:
+        treename = ' '.join(sorted(prefixes, key=lambda p: (-prefixes[p], p)))
 
     # Write out files
 

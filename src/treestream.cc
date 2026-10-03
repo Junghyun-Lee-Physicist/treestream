@@ -63,6 +63,9 @@
 //  Updated: Junghyun Lee <junghyun.lee@cern.ch>
 //           18-Dec-2025 JhLee - Change warning to fatal for missing branches
 //                               to prevent Ghost Object creation
+//           03-Oct-2026       - readbranch: a read error (GetEntry < 0) is
+//                               fatal; before, the previous entry's values
+//                               were returned silently (troubleshooting A14)
 //----------------------------------------------------------------------------
 #ifdef PROJECT_NAME
 #include <boost/regex.hpp>
@@ -802,9 +805,17 @@ namespace
     assert(field != 0);
     if ( field->branch == 0 ) return;
 
-    // Read entry for current branch
+    // Read entry for current branch. GetEntry returns -1 on an I/O error
+    // (unreadable or corrupt basket); the leaf would then still hold the
+    // previous entry's values, so stop instead of returning them.
 
-    field->branch->GetEntry(entry);
+    if ( field->branch->GetEntry(entry) < 0 )
+      {
+        TFile* f = field->branch->GetFile();
+        fatal("readbranch - I/O error reading " + field->fullname +
+              " at local entry " + std::to_string(entry) +
+              (f ? " in file " + std::string(f->GetName()) : std::string("")));
+      }
 
     // If address field is zero, this signals that 
     // the caller has not provided a location into which 

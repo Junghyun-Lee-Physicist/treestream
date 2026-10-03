@@ -2,7 +2,7 @@
 
 > **Purpose:** why each non-obvious choice was made, what was rejected, and whether it still holds.
 > **Audience:** any contributor (human or AI) about to change a load-bearing behavior — check here first.
-> **Status:** living, append-only. **Updated:** 2026-06-27.
+> **Status:** living, append-only. **Updated:** 2026-10-03.
 > **Contract:** [DOCUMENTATION_GUIDELINE.en.md](DOCUMENTATION_GUIDELINE.en.md) §3, §5. **Related:** [design.md](design.md), [troubleshooting.md](troubleshooting.md), [CHANGELOG.md](CHANGELOG.md), [roadmap.md](roadmap.md).
 
 Status vocabulary (per the contract): **DECIDED** (in force) · **PROPOSED** (suggested, not settled) · **OPEN** (unresolved/unknown) · **DEPRECATED** (was decided, now retired). Never silently reopen a DECIDED item or treat a PROPOSED item as settled — change its status explicitly and say why.
@@ -69,6 +69,20 @@ Each entry is dated and links to where it is implemented/explained. Decisions ar
 - **Decision:** the en/ko guideline is the authoritative, project-agnostic contract; `DeveloperGuideline.md` becomes the treestream-specific overlay that references it.
 - **Rationale:** one canonical generic contract; the generic "reusing this structure" framework previously embedded in `DeveloperGuideline.md` duplicated it (one fact, one place).
 - **Where:** [DOCUMENTATION_GUIDELINE.en.md](DOCUMENTATION_GUIDELINE.en.md), [DeveloperGuideline.md](DeveloperGuideline.md).
+
+## D13 — Object size from the longest bound field; read errors stop the job
+**Status:** PROPOSED · 2026-10-03 (NanoAOD v15 review; maintainer to confirm)
+- **Proposal:** `fill<Obj>s()` sizes from the longest bound field (not the
+  first); counters are initialized and read with the arrays that use them;
+  object vectors start empty; `readbranch()` stops on `GetEntry < 0` and the
+  generated `read()` on an entry that cannot be loaded; `choose` keys stay the
+  full name.
+- **Rationale:** each replaced behavior produced a silent wrong result (zero
+  objects, ghost structs, garbage counters, stale values) — troubleshooting
+  A11–A14, A17. Keeping the full-name keys keeps every existing analyzer's
+  `choose.find("Events/...")` working.
+- **Rejected:** sizing from the counter value alone (a varlist that leaves out
+  every field of an object would then produce zero-valued objects).
 
 ---
 

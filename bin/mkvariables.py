@@ -36,6 +36,10 @@
 #               15-Mar-2026 JhLee - Add --merge mode for multi-sample Super-Set
 #                                   variables.txt generation with common/unique
 #                                   branch annotation
+#               03-Oct-2026       - single mode honours positional tree names;
+#                                   the header lists only the scanned trees;
+#                                   --merge reports type conflicts and keeps the
+#                                   widest type (docs/troubleshooting.md A15)
 # ----------------------------------------------------------------------------
 
 import os, sys, re, argparse
@@ -97,7 +101,8 @@ def scan_file(filename, treenames=None, usetree=False):
         stream = ROOT.itreestream(filename, treename_str)
         if not stream.good():
             sys.exit(f"\t** Cannot open stream for {filename}")
-        tname = list(stream.treenames())
+        # the trees we scan (stream.treenames() lists every tree in the file)
+        tname = list(treenames)
     else:
         stream = ROOT.itreestream(filename)
         if not stream.good():
@@ -203,6 +208,16 @@ def scan_file(filename, treenames=None, usetree=False):
 def run_single(args):
     filename = args.filename[0]
     treenames = args.tree if args.tree else None
+    # documented form 'mkvariables.py file.root Events': words after the file
+    # are tree names (argparse puts them into the file list)
+    extra = args.filename[1:]
+    if extra and any(x.endswith('.root') for x in extra):
+        sys.exit("\t** single mode reads one file; use --merge for several: %s"
+                 % ' '.join(args.filename))
+    if extra:
+        if treenames:
+            sys.exit("\t** give the tree either after the file or with --tree, not both")
+        treenames = extra
     branches, tname, skipped = scan_file(filename, treenames, args.usetree)
 
     print(f"\n==> file: {filename}")
@@ -265,18 +280,43 @@ def run_merge(args):
     all_varnames = OrderedDict()  # varname -> record (use first occurrence for type/count)
     presence = {}  # varname -> set of labels that contain it
 
+    # widest-type rule for type conflicts between files (e.g. NanoAOD v9 Int_t
+    # vs v15 Short_t/UChar_t/ULong64_t); the type decides the C++ buffer.
+    # A type not in the table never wins (the first file's type is kept).
+    RANK = {'bool': 0, 'uchar': 1, 'char': 1, 'short': 2, 'ushort': 2,
+            'int32': 3, 'int': 3, 'uint': 3, 'long64': 4, 'ulong64': 4,
+            'float': 5, 'double': 6}
+    def rank(t):
+        m = re_getvtype.findall(t)
+        return RANK.get(m[0] if m else t, -1)
+    conflicts = {}   # varname -> {label: type}
     for label, branches in file_branches.items():
         for varname, record in branches.items():
             if varname not in all_varnames:
                 all_varnames[varname] = record
             else:
-                # Take max count across files
                 existing = all_varnames[varname]
-                if record[3] > existing[3]:
-                    all_varnames[varname] = record
+                btype = existing[0]
+                if record[0] != existing[0]:
+                    conflicts.setdefault(varname, {})
+                    if rank(record[0]) > rank(existing[0]):
+                        btype = record[0]
+                # Take max count across files, keep the widest type
+                rec = record if record[3] > existing[3] else existing
+                all_varnames[varname] = (btype,) + tuple(rec[1:])
             if varname not in presence:
                 presence[varname] = set()
             presence[varname].add(label)
+    for varname in conflicts:
+        for label, branches in file_branches.items():
+            if varname in branches:
+                conflicts[varname][label] = branches[varname][0]
+    if conflicts:
+        print(f"  [Type conflicts] {len(conflicts)} branches have different types "
+              f"in different files; the widest type is used:")
+        for varname in sorted(conflicts):
+            per = ', '.join(f"{l}={t}" for l, t in conflicts[varname].items())
+            print(f"    {varname}: {per} -> {all_varnames[varname][0]}")
 
     # ---- Unify counts for branches sharing the same leaf counter ----
     # When merging across files, the same object (e.g. Jet) may have

@@ -1,7 +1,7 @@
 # Design & Architecture
 
 > **Purpose:** how this treestream fork works and **why** — the data model, the generation pipeline, and component reference.
-> **Audience:** anyone (human or AI) who needs to understand or change the tool. **Status:** living. **Updated:** 2026-06-27.
+> **Audience:** anyone (human or AI) who needs to understand or change the tool. **Status:** living. **Updated:** 2026-10-03.
 > **Note on type:** per [contract §7](DOCUMENTATION_GUIDELINE.en.md), this single doc combines *Purpose & rationale* + *Architecture* + *Reference* because, at this scope, they are read and changed together (see [decisions D5](decisions.md#d5--merge-conceptsmd--architecturemd-into-designmd)).
 > **Related:** [DeveloperGuideline.md](DeveloperGuideline.md), [decisions.md](decisions.md), [troubleshooting.md](troubleshooting.md), [roadmap.md](roadmap.md).
 
@@ -173,7 +173,10 @@ failure — you *see* what wasn't bound.
 
 **Object structs.** After `read(entry)` you call `fillObjects()` (or
 `fillJets()` etc.). Each `fill<Obj>s()` resizes the struct vector to the
-collection length and copies field-by-field with a bounds check:
+collection length — the longest bound field of the object, so one absent
+field cannot empty the collection (troubleshooting
+[§A11](troubleshooting.md#a11-zero-objects-when-the-first-field-of-an-object-is-absent)) —
+and copies field-by-field with a bounds check:
 
 ```cpp
 Jet[i].btag = (Jet_btag.size() > i) ? Jet_btag[i] : 0;
@@ -183,6 +186,21 @@ so a field vector that is empty/short (a **partially** missing field — e.g. an
 MC-only field while running on Data, where `Jet` exists but `Jet_genPartIdx`
 does not) yields `0` instead of indexing out of bounds and crashing
 (troubleshooting [§A7](troubleshooting.md#a7-segfault-filling-structs-on-data-mc-only-fields)).
+
+**Leaf counters.** `int nJet;` is set to 0 in `initBuffers()` and read when an
+array that uses it is read and the stand-alone counter branch exists
+(`Events/nJet`, NanoAOD); Delphes-style counters stay 0
+([§A13](troubleshooting.md#a13-leaf-counters-njet--never-initialized-or-read)).
+`successBranches` / `missingBranches` are members, filled by the constructor.
+
+**Chains: the first file decides.** `present()` and the binding are decided once,
+from the first file of the stream. A branch bound from file 1 that is absent in
+a later file stops the job at the file switch
+(`** Error ** update - pointer is zero for tree/branch (...)`, exit 1) — even if
+the analysis never reads it. A branch absent in file 1 but present later is never
+read (0/empty for the whole job, no message). NanoAOD HLT branch sets change
+with the menu during a year, so a job's files should share one branch set, or
+the buffer should carry only the branches the analysis reads.
 
 **Selection bookkeeping.** `select(obj)` / `select(obj,index)` push into
 `indexmap`; `saveObjects()` compacts the chosen indices and updates the leaf
@@ -198,7 +216,9 @@ Priority #1, and the most counter-intuitive design point. The rule:
   branch therefore reads as `0` rather than uninitialized garbage.
 - **Vectors are *not* pre-filled.** The forced `std::vector<T>(count, 0)`
   pre-allocation the original code put in `initBuffers()` was **removed** in
-  this fork.
+  this fork; the object (struct) vectors too, since 2026-10-03
+  ([§A12](troubleshooting.md#a12-object-vectors-pre-sized-ghost-structs-before-the-first-fill)).
+- **Leaf counters are 0** until read.
 
 **Why removing vector zero-init matters.** If a collection vector is pre-filled
 with `count` zeros, then even before any event is read `Jet` "contains" `count`
@@ -229,7 +249,9 @@ in §4 then adds the bounds check for partially-missing fields. (Commits around
 stay there — capacity is retained across events **by design** (ROOT needs a
 stable buffer address, so never call `shrink_to_fit()`). To cut memory/IO:
 (1) pass a runtime `varlist` — `eventBuffer ev(stream, "Jet_pt Jet_eta MET_pt")`
-reads only the matching branches; (2) trim unused branches from `variables.txt`
+reads only the branches whose name starts with one of the words (full
+`Events/Jet_pt` or short `Jet_pt`; working since 2026-10-03, §A16), plus the
+leaf counters of those arrays; (2) trim unused branches from `variables.txt`
 before generating; (3) skip `fillObjects()` and read the flat vectors
 (`ev.Jet_pt[i]`) directly in memory-critical loops.
 
@@ -243,7 +265,9 @@ before generating; (3) skip `fillObjects()` and read the flat vectors
 2. **Core layer (`src/treestream.cc`):** as of 18-Dec-2025, a *direct*
    `select()` on a non-existent branch calls `fatal()` (was `warning()`). This
    only fires if **user code** calls `select()` itself without a `present()`
-   guard; the generated buffer never trips it.
+   guard; the generated buffer never trips it. As of 2026-10-03 a read error
+   (`GetEntry` < 0, §A14) is `fatal()` too, and the generated `read()` stops on
+   an entry that cannot be loaded (§A17).
 
 Intent: the common path (the generated buffer) is forgiving so one analyzer
 spans heterogeneous samples; the raw API is strict so a genuine typo in
@@ -352,7 +376,11 @@ The forgiving design trades one failure mode for a milder one — and seeds the
 2. **Direct vector access is the caller's responsibility.** Struct fill is
    bounds-checked, but reading a field `std::vector` directly (not via the
    struct) for a missing branch needs a `.size()` check in the analysis code.
-3. **The Super-Set is only as complete as the files you scanned.** A branch
+3. **64-bit integers go through `double`.** `toexternal()` copies with
+   `TLeaf::GetValue()`, so `Long64_t`/`ULong64_t` values above 2^53 lose low
+   bits (NanoAOD v15 `TrigObj_filterBits`; `event` numbers are far below), and
+   `ULong64_t` is declared as signed `long` (values from 2^63 up overflow).
+4. **The Super-Set is only as complete as the files you scanned.** A branch
    present in *no* scanned file is absent from `variables.txt` and the analyzer
    never knows about it. Scan representative Data **and** MC (and each era you
    care about).

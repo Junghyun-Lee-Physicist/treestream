@@ -137,6 +137,10 @@ cd SmokeTest && source setup.sh && make
 echo "$PWD/../test/fatjet.root" > filelist.txt
 ./SmokeTest filelist.txt smoke.root
 rootls smoke.root
+
+# 3. NanoAOD v15 스키마 점검 — 합성 파일(실제 스키마)과 실제 파일 (test/v15check/README.md)
+TS=$PWD NF=<NtupleForge> WORK=/tmp/$USER/tscheck /bin/bash test/v15check/run_tests.sh
+TS=$PWD WORK=/tmp/$USER/tsreal NMAX=50 /bin/bash test/v15check/run_realfiles.sh <mc.root> <data.root>
 ```
 
 ## 빌드 설정 (요약)

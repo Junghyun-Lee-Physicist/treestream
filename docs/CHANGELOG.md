@@ -1,7 +1,7 @@
 # Changelog
 
 > **Purpose:** the single canonical record of what changed and when.
-> **Audience:** anyone (human or AI) asking "what changed?". **Status:** living, append-only. **Updated:** 2026-06-27.
+> **Audience:** anyone (human or AI) asking "what changed?". **Status:** living, append-only. **Updated:** 2026-10-03.
 > **Contract:** [DOCUMENTATION_GUIDELINE.en.md](DOCUMENTATION_GUIDELINE.en.md) §3. **Related:** [decisions.md](decisions.md) (why), [STATUS.md](STATUS.md) (now), [troubleshooting.md](troubleshooting.md).
 
 The **single canonical** record of notable changes to this `treestream` fork.
@@ -65,6 +65,54 @@ Example:
   `make install` path was dropped (build needs only the `ROOTSYS` that `cmsenv`
   sets). `makingCommand.py` dataset base dir → the `ttHH2017UL_fullNano_v20`
   campaign.
+
+### Fixed (2026-10-03, NanoAOD v15 review — troubleshooting A11–A17)
+- **`mkanalyzer.py` object sizing** — `fill<Obj>s()` sized `Obj` from the
+  *first* field (`Jet.resize(Jet_area.size())`); with a v15 Super-Set the first
+  field is `Jet_PNetRegPtRawCorr`, so a file without that one branch gave **zero
+  jets** with every other `Jet_*` present. Now the generated code takes the
+  longest bound field of the object. ([§A11](troubleshooting.md#a11-zero-objects-when-the-first-field-of-an-object-is-absent))
+- **`mkanalyzer.py` ghost structs** — `initBuffers()` pre-sized every object
+  vector (`Jet = std::vector<Jet_s>(N)`), so `ev.Jet.size()==N` zero-valued jets
+  until the first `fillObjects()`. Now `Jet.clear(); Jet.reserve(N);`.
+  ([§A12](troubleshooting.md#a12-object-vectors-pre-sized-ghost-structs-before-the-first-fill))
+- **`mkanalyzer.py` leaf counters** — `int nJet;` etc. were declared but never
+  initialized nor read (garbage in read mode). Now 0 in `initBuffers()`, and
+  read (`Events/nJet`) when an array that uses the counter is read, so a varlist
+  still limits what is read. ([§A13](troubleshooting.md#a13-leaf-counters-njet--never-initialized-or-read))
+  *Migration:* an analyzer that called `stream.select("Events/nJet", myN)`
+  itself before building the buffer now has that address replaced by `ev.nJet`.
+- **`src/treestream.cc` `readbranch`** — the return value of
+  `TBranch::GetEntry` was ignored; an unreadable basket (zlib error, `-1`) left
+  the previous entry's values in place and the job exited 0. Now `fatal()` with
+  branch, entry and file. ([§A14](troubleshooting.md#a14-io-error-on-a-basket-returned-the-previous-entrys-values))
+- **`mkanalyzer.py` `eventBuffer::read`** — ignored a negative
+  `itreestream::read()` (an entry that cannot be loaded, e.g. a chain file that
+  cannot be opened); the buffers kept the previous values and the job exited 0.
+  Now it stops with exit 1. ([§A17](troubleshooting.md#a17-an-entry-that-cannot-be-loaded-kept-the-previous-values))
+- **`mkvariables.py` single mode** — the documented `mkvariables.py file.root
+  Events` ignored `Events` (argparse put it into the file list) and scanned the
+  first tree in the file; the header listed every tree in the file. Now the
+  words after the file are tree names and the header lists only the scanned
+  trees. ([§A15](troubleshooting.md#a15-mkvariablespy-single-mode-ignored-the-tree-name))
+- **`mkanalyzer.py` varlist** — `eventBuffer(stream, "Jet_pt")` matched nothing
+  (keys are `Events/Jet_pt`, and an exact key was excluded by a strict `>`
+  length test). Now a key selects a branch whose full or short name starts with
+  it (exact names included). ([§A16](troubleshooting.md#a16-varlist-selected-nothing))
+
+### Changed (2026-10-03)
+- **`mkvariables.py --merge`** prints `[Type conflicts]` (branch, type per file)
+  and keeps the widest type; before, the first file's type won silently
+  (NanoAOD v9 vs v15: 84 conflicts, e.g. `Int_t` -> `Short_t`/`UChar_t`, and
+  `TrigObj_filterBits` `Int_t` -> `ULong64_t`). A type outside the table never
+  wins.
+- **`mkanalyzer.py`** — `successBranches` / `missingBranches` are members (an
+  analyzer can test them after construction); `choose` keys are always the full
+  `Tree/branch` name (as in every buffer made from NanoAOD files: their headers
+  list three or more trees; a manifest with exactly two `Tree` lines used to get
+  short keys); the skeleton `<name>.cc` opens the tree the records belong to
+  (`Events`), not the header's tree list; `if (choose[..]) { .. }` braces (no
+  `-Wdangling-else`); `exit(1)` (was `exit(0)`) on a bad stream.
 
 ### Fixed
 - **`mkanalyzer.py` non-deterministic output** — leaf-counter scalar

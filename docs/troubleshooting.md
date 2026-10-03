@@ -1,7 +1,7 @@
 # Troubleshooting
 
 > **Purpose:** every bug/crash/failure hit so far — symptom, cause, fix — plus validation methods.
-> **Audience:** anyone (human or AI) seeing an error or wanting to verify correctness. **Status:** living, append-only. **Updated:** 2026-06-27.
+> **Audience:** anyone (human or AI) seeing an error or wanting to verify correctness. **Status:** living, append-only. **Updated:** 2026-10-03.
 > **Contract:** [DOCUMENTATION_GUIDELINE.en.md](DOCUMENTATION_GUIDELINE.en.md) §3. **Related:** [design.md](design.md), [decisions.md](decisions.md), [CHANGELOG.md](CHANGELOG.md).
 
 Concrete failures hit while developing this fork, and how each was resolved.
@@ -160,6 +160,78 @@ Template for Part A entries: **Symptom · Signature · Root cause · Fix · Vali
   (same md5) on `variables_v18.txt`. Before the fix, forcing `PYTHONHASHSEED`
   also made them match — confirming the cause.
 
+### A11. Zero objects when the first field of an object is absent
+- **Symptom:** `ev.Jet` is empty in every event of a file although `Jet_pt`,
+  `Jet_eta`, … are read correctly; exit 0; the report shows only one
+  `[MISSING]` line for an unused branch.
+- **Signature:** generated `fillJets()` starts with `Jet.resize(Jet_PNetRegPtRawCorr.size());`
+  (v15 Super-Set; v9 buffers use `Jet_area`).
+- **Root cause:** `mkanalyzer.py` sized the struct vector from the first field
+  of the object (`values[0]`); in ASCII order upper-case field names come
+  first, so the sizing field is an arbitrary branch that a slim branch list may
+  drop.
+- **Fix:** size from the longest bound field (`nobj_ = max(field.size())`).
+- **Validated by:** synthetic file with the real 2024 v15 schema minus
+  `Jet_PNetRegPtRawCorr`: before, 30/30 events with `Jet.size()==0`; after, the
+  sizes equal `nJet` (B6).
+
+### A12. Object vectors pre-sized (ghost structs before the first fill)
+- **Symptom:** `ev.Jet.size()` equals the buffer capacity (e.g. 25) with
+  zero-valued entries before `fillObjects()` is called.
+- **Root cause:** `initBuffers()` had `Jet = std::vector<eventBuffer::Jet_s>(N)`;
+  the A5 fix covered the flat vectors only.
+- **Fix:** `Jet.clear(); Jet.reserve(N);`.
+- **Validated by:** size 0 before the first fill (B6).
+
+### A13. Leaf counters (`nJet`, …) never initialized or read
+- **Symptom:** `ev.nJet` holds garbage in read mode.
+- **Root cause:** counters are not records in `variables.txt`; `mkanalyzer.py`
+  declared `int nJet;` (for the write path) but neither initialized nor
+  selected it.
+- **Fix:** `nJet = 0` in `initBuffers()`; after the arrays,
+  `if (usedCounters.count("nJet") && input->present("Events/nJet")) input->select("Events/nJet", nJet);`
+  — only when an array that uses it is read, so a varlist still limits what is
+  read. (Delphes counters such as `Jet_` are not stand-alone branches; they stay 0.)
+- **Validated by:** counters equal the number of objects written, every event
+  (B6); Delphes `test/fatjet.root`: every other value identical before/after.
+
+### A14. I/O error on a basket returned the previous entry's values
+- **Symptom:** after `Error in <TBranch::GetBasket>: ... badread=1` the job
+  continues and exits 0; the affected entries carry the last good entry's values.
+- **Signature:** `R__unzip: error -3 in inflate (zlib)` /
+  `Error in <TBasket::ReadBasketBuffers>` / `Error in <TBranch::GetBasket>`.
+- **Root cause:** `readbranch()` ignored the `GetEntry` return value (`-1`).
+- **Fix:** `fatal("readbranch - I/O error reading <branch> at local entry <n> in file <f>")`.
+- **Validated by:** file with one corrupted basket (entries 200–299): before,
+  100 entries with the value of entry 199 and exit 0; after, exit 1 at entry 200.
+
+### A15. `mkvariables.py` single mode ignored the tree name
+- **Symptom:** `mkvariables.py file.root Events` writes the branches of the
+  first tree in the file (`Runs` if it comes first).
+- **Root cause:** `filename` is `nargs="+"`, so the second word was a file
+  name that single mode never read. With `--tree Events` the header listed every
+  tree of the file in file order (`Tree Events / Tree Runs / Tree LuminosityBlocks`)
+  and `mkanalyzer.py` expected `tree:` on the first line, so the skeleton
+  `<name>.cc` opened `itreestream(filenames, " Runs LuminosityBlocks")`.
+- **Fix:** words after the file are tree names in single mode; header = scanned
+  trees; the skeleton opens the tree the records belong to. `choose` keys stay
+  the full name.
+
+### A16. varlist selected nothing
+- **Symptom:** `eventBuffer ev(stream, "Jet_pt MET_pt")` connects 0 branches.
+- **Root cause:** `choose` keys are `Events/Jet_pt`; the match required the key
+  to be a strict prefix (`it->first.length() > key.length()`).
+- **Fix:** a key selects a branch whose full or short name starts with it.
+
+### A17. An entry that cannot be loaded kept the previous values
+- **Symptom:** a file of the chain cannot be opened when its entries are read;
+  those entries carry the last good entry's values; exit 0.
+- **Root cause:** `eventBuffer::read()` ignored a negative `itreestream::read()`
+  (`TChain::LoadTree` < 0).
+- **Fix:** stop with exit 1 and the entry number.
+- **Validated by:** a two-file chain whose second file is made unreadable after
+  the buffer is built (found in review, 2026-10-03).
+
 ---
 
 ## Part B — Validation methods (and their limits)
@@ -192,3 +264,14 @@ on Data; no segfault. This exercises A5/A6/A7 together.
 `mklist.py file.root Events` dumps the raw branch listing — use it to confirm
 whether a specific branch truly exists in a file before assuming a generator
 bug.
+
+### B6. Value round trip on a real NanoAOD schema (2026-10-03)
+Synthetic files with the exact `Events` schema of real NanoAOD v15 files
+(names, types, counters from a branch inventory, after a slim branch list),
+filled with known values; a harness generated from `eventBuffer.h` dumps every
+member each event and a script compares with what was written. Run on 2024 MC
+and four data eras, single files and two-file chains, plus a corrupted-basket
+file. *Limit:* synthetic values; repeat on real files by comparing the harness
+dump with an independent PyROOT read of the same file. Both are in
+[`../test/v15check/`](../test/v15check/README.md) (`run_tests.sh`,
+`run_realfiles.sh`).
